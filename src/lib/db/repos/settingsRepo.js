@@ -122,6 +122,12 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
+  if (Object.prototype.hasOwnProperty.call(updates, "enableObservability")) {
+    try {
+      const { invalidateObservabilityConfigCache } = await import("./requestDetailsRepo.js");
+      invalidateObservabilityConfigCache();
+    } catch {}
+  }
   return mergeWithDefaults(next);
 }
 

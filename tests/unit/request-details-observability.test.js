@@ -151,4 +151,27 @@ describe("Request details payload visibility with Observability", () => {
     expect(hit.request).toEqual({ redacted: true });
     expect(hit.response).toEqual({ redacted: true });
   });
+
+  it("saves and returns details even when ENABLE_REQUEST_LOGS=false is in env", async () => {
+    process.env.ENABLE_REQUEST_LOGS = "false";
+    await db.updateSettings({ enableObservability: true, observabilityBatchSize: 20 });
+
+    await db.saveRequestDetail({
+      id: "obs-env-test-1",
+      provider: "anthropic",
+      model: "claude-3-7-sonnet",
+      status: "success",
+      tokens: { prompt_tokens: 20, completion_tokens: 10 },
+      request: { model: "claude-3-7-sonnet", messages: [{ role: "user", content: "Hello" }] },
+      response: { content: "Hello there!" },
+    });
+
+    // Query immediately — getRequestDetails should flush buffer before select
+    const res = await GET(makeReq("page=1&pageSize=10"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const hit = body.details.find((d) => d.id === "obs-env-test-1");
+    expect(hit).toBeDefined();
+    expect(hit.response.content).toBe("Hello there!");
+  });
 });

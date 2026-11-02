@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestDetails } from "@/lib/usageDb";
+import { getRequestDetails, isObservabilityActive } from "@/lib/usageDb";
 import { getSettings } from "@/lib/localDb";
 
 /**
@@ -52,16 +52,13 @@ export async function GET(request) {
     const settings = await getSettings().catch(() => ({}));
 
     // Observability is active if enabled in settings or through environment variable
-    const isObservabilityActive =
-      settings.enableObservability === true ||
-      process.env.OBSERVABILITY_ENABLED === "true" ||
-      process.env.ENABLE_REQUEST_LOGS === "true";
+    const active = isObservabilityActive(settings);
 
     // Allow operator to explicitly force redaction even with observability on if desired
     const forceRedact = process.env.OBSERVABILITY_REDACTED === "true";
 
     // If observability is not enabled, or if redaction is explicitly forced, redact payloads
-    if (!isObservabilityActive || forceRedact) {
+    if (!active || forceRedact) {
       const redactedDetails = (result.details || []).map((d) => {
         const redacted = { ...d };
         for (const key of ["request", "providerRequest", "providerResponse", "response"]) {

@@ -4,42 +4,42 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
-const DEFAULT_MAX_JSON_SIZE = 5 * 1024;
+const DEFAULT_MAX_JSON_SIZE = 500 * 1024;
 const CONFIG_CACHE_TTL_MS = 5000;
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
+
+export function invalidateObservabilityConfigCache() {
+  cachedConfig = null;
+  cachedConfigTs = 0;
+}
+
+export function isObservabilityActive(settings = {}) {
+  // If explicitly enabled in UI settings (via Profile page toggle)
+  if (settings?.enableObservability === true) return true;
+  // If explicitly enabled via environment variable
+  if (process.env.OBSERVABILITY_ENABLED === "true" || process.env.ENABLE_REQUEST_LOGS === "true") return true;
+  // If explicitly disabled via environment variable
+  if (process.env.OBSERVABILITY_ENABLED === "false") return false;
+  // Fallback to UI settings value
+  return settings?.enableObservability === true;
+}
 
 async function getObservabilityConfig() {
   if (cachedConfig && (Date.now() - cachedConfigTs) < CONFIG_CACHE_TTL_MS) return cachedConfig;
   try {
     const { getSettings } = await import("./settingsRepo.js");
     const settings = await getSettings();
-    const envRequestLogs = process.env.ENABLE_REQUEST_LOGS;
-    if (envRequestLogs !== undefined) {
-      const enabled = envRequestLogs.toLowerCase() === "true";
-      cachedConfig = {
-        enabled,
-        maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
-        batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
-        flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-        maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
-      };
-      cachedConfigTs = Date.now();
-      return cachedConfig;
-    }
-    const envFallback = process.env.OBSERVABILITY_ENABLED !== "false";
-    const uiFlag = typeof settings.enableObservability === "boolean";
-    const enabled = uiFlag
-      ? settings.enableObservability
-      : envFallback;
+    const enabled = isObservabilityActive(settings);
+    const maxJsonKb = parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || String(settings.observabilityMaxJsonSize || "500"), 10);
 
     cachedConfig = {
       enabled,
       maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-      maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
+      maxJsonSize: (maxJsonKb > 0 ? maxJsonKb : 500) * 1024,
     };
   } catch {
     cachedConfig = {
@@ -155,11 +155,16 @@ export async function saveRequestDetail(detail) {
     flushTimer = setTimeout(() => {
       flushTimer = null;
       flushToDatabase().catch(() => {});
-    }, config.flushIntervalMs);
+    }, Math.min(config.flushIntervalMs, 1000));
   }
 }
 
 export async function getRequestDetails(filter = {}) {
+  if (writeBuffer.length > 0) {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    await flushToDatabase();
+  }
+
   const db = await getAdapter();
   const conds = [];
   const params = [];
@@ -199,6 +204,11 @@ export async function getDistinctProviders() {
 }
 
 export async function getRequestDetailById(id) {
+  if (writeBuffer.length > 0) {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    await flushToDatabase();
+  }
+
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
