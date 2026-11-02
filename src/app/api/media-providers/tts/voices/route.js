@@ -31,12 +31,24 @@ export async function GET(request) {
       return NextResponse.json({ error: `Provider '${provider}' does not support voice listing` }, { status: 400 });
     }
 
-    // ElevenLabs requires API key
-    const raw = provider === "elevenlabs" ? await fetcher(apiKey) : await fetcher();
+    // ElevenLabs and Cartesia require API key
+    const raw = (provider === "elevenlabs" || provider === "cartesia") ? await fetcher(apiKey) : await fetcher();
     const useElevenShape = provider === "elevenlabs" || provider === "gemini";
     let voices;
 
-    if (provider === "local-device") {
+    if (provider === "cartesia") {
+      voices = raw.map((v) => ({
+        id:          v.id,
+        name:        v.name,
+        locale:      v.locale || v.lang || "en",
+        lang:        v.lang || "en",
+        country:     "",
+        countryName: "",
+        langName:    langName(v.lang || "en"),
+        gender:      v.gender || "",
+        description: v.description || "",
+      }));
+    } else if (provider === "local-device") {
       voices = raw.map((v) => ({
         id:      v.id,
         name:    v.name,

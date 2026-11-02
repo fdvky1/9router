@@ -75,6 +75,7 @@ Default → raw audio bytes (Content-Type `audio/mp3`).
 | `google-tts` | language code e.g. `en`, `vi` | **noAuth** |
 | `local-device` | OS voice name (`say -v ?` / SAPI) | **noAuth**; needs `ffmpeg` |
 | `deepgram` | `aura-asteria-en` etc | Token auth |
-| `nvidia`, `inworld`, `cartesia`, `playht` | `model/voice` | Provider-specific auth header |
+| `cartesia` | `<model_id>/<voice_id>` or `<voice_id>` | Default model `sonic-3.5`; list voices in Dashboard or `/v1/audio/voices?provider=cartesia` |
+| `nvidia`, `inworld`, `playht` | `model/voice` | Provider-specific auth header |
 | `coqui`, `tortoise` | speaker / voice id | Localhost noAuth |
 | `hyperbolic` | model id | Body = `{text}` only |

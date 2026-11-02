@@ -261,7 +261,8 @@ export function TtsExampleCard({ providerId }) {
 
   const ttsBody = (() => {
     const b = { model: modelFull, input };
-    if (config.hasLanguageHint && languageHint) b.language = languageHint;
+    const lang = (config.hasLanguageHint && languageHint) ? languageHint : (providerId === "cartesia" ? selectedLang : "");
+    if (lang) b.language = lang;
     if (config.hasStyleInput && style.trim()) b.style = style.trim();
     if (responseFormat && responseFormat !== "json" && responseFormat !== "mp3") {
       b.response_format = responseFormat;

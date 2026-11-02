@@ -137,6 +137,15 @@ export const TTS_MODELS_CONFIG = {
     ],
     // voices come from API, not hardcoded
   },
+  cartesia: {
+    models: [
+      { id: "sonic-3.5",    name: "Sonic 3.5 (Highest Quality)", type: "tts" },
+      { id: "sonic-3",      name: "Sonic 3 (Fast & Expressive)", type: "tts" },
+      { id: "sonic-latest", name: "Sonic Latest",                type: "tts" },
+      { id: "sonic-2",      name: "Sonic 2 (Legacy)",            type: "tts" },
+    ],
+    // voices come from API, not hardcoded
+  },
   "edge-tts": {
     defaults: [
       { id: "en-US-AriaNeural",    name: "Aria (en-US)",    type: "tts" },

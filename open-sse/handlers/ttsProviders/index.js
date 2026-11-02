@@ -9,6 +9,7 @@ import gemini, { fetchGeminiVoices } from "./gemini.js";
 import xiaomiMimo from "./xiaomi-mimo.js";
 import selfhostedTts from "./selfhostedTts.js";
 import ollamaLocal from "./ollamaLocal.js";
+import cartesia, { fetchCartesiaVoices, fetchCartesiaAccents } from "./cartesia.js";
 import { FORMAT_HANDLERS } from "./genericFormats.js";
 import { parseModelVoice } from "./_base.js";
 
@@ -24,6 +25,7 @@ const SPECIAL_ADAPTERS = {
   "xiaomi-mimo": xiaomiMimo,
   "selfhosted-tts": selfhostedTts,
   "ollama-local": ollamaLocal,
+  cartesia,
 };
 
 export function getTtsAdapter(provider) {
@@ -52,7 +54,8 @@ export const VOICE_FETCHERS = {
   "local-device": fetchLocalDeviceVoices,
   elevenlabs: fetchElevenLabsVoices,
   gemini: fetchGeminiVoices,
+  cartesia: fetchCartesiaVoices,
 };
 
 // Re-export for backward compat
-export { fetchEdgeTtsVoices, fetchLocalDeviceVoices, fetchElevenLabsVoices, fetchGeminiVoices };
+export { fetchEdgeTtsVoices, fetchLocalDeviceVoices, fetchElevenLabsVoices, fetchGeminiVoices, fetchCartesiaVoices, fetchCartesiaAccents };
