@@ -347,7 +347,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     response: {
       content: translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null,
       thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
-      finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
+      tool_calls: translatedResponse?.choices?.[0]?.message?.tool_calls || null,
+      finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown",
+      raw: translatedResponse || null,
     },
     pxpipe,
     status: "success"

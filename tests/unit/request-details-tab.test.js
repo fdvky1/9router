@@ -135,8 +135,14 @@ describe("backupDbLite — excludes requestDetails, keeps critical data", () => 
     expect(fs.existsSync(dest)).toBe(true);
 
     // Open backup and assert requestDetails is empty, settings present
-    const Database = (await import("better-sqlite3")).default;
-    const bak = new Database(dest);
+    let bak;
+    try {
+      const Database = (await import("better-sqlite3")).default;
+      bak = new Database(dest);
+    } catch {
+      const { DatabaseSync } = await import("node:sqlite");
+      bak = new DatabaseSync(dest);
+    }
     try {
       // requestDetails is fully excluded — table must not exist in the backup
       const rdTable = bak.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='requestDetails'").get();
@@ -145,7 +151,7 @@ describe("backupDbLite — excludes requestDetails, keeps critical data", () => 
       const st = bak.prepare("SELECT COUNT(*) c FROM settings").get();
       expect(st.c).toBeGreaterThanOrEqual(1);
     } finally {
-      bak.close();
+      if (typeof bak.close === "function") bak.close();
       fs.rmSync(backupDir, { recursive: true, force: true });
     }
   });

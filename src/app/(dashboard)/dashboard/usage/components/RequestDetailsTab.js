@@ -493,12 +493,30 @@ export default function RequestDetailsTab() {
                     </pre>
                   </div>
                 )}
-                
+
+                {Array.isArray(selectedDetail.response?.tool_calls) && selectedDetail.response.tool_calls.length > 0 && (
+                  <div className="mb-4">
+                    <h4 className="font-semibold text-text-main mb-2 flex items-center gap-2 text-xs uppercase tracking-wide opacity-70">
+                      <span className="material-symbols-outlined text-[16px]">build</span>
+                      Tool Calls
+                    </h4>
+                    <pre className="max-h-[200px] max-w-full overflow-auto rounded-lg border border-blue-200 bg-blue-50 p-3 font-mono text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100 sm:p-4">
+                      {JSON.stringify(selectedDetail.response.tool_calls, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
                 <h4 className="font-semibold text-text-main mb-2 text-xs uppercase tracking-wide opacity-70">
                   Content
                 </h4>
                 <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
-                  {selectedDetail.response?.content || "[No content]"}
+                  {typeof selectedDetail.response?.content === "string" && selectedDetail.response.content
+                    ? selectedDetail.response.content
+                    : (selectedDetail.response?.raw
+                        ? JSON.stringify(selectedDetail.response.raw, null, 2)
+                        : (typeof selectedDetail.response === "object"
+                            ? JSON.stringify(selectedDetail.response, null, 2)
+                            : String(selectedDetail.response || "[No content]")))}
                 </pre>
               </CollapsibleSection>
             </div>

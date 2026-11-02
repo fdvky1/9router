@@ -86,6 +86,8 @@ export function createSSEStream(options = {}) {
   let totalContentLength = 0;
   let accumulatedContent = "";
   let accumulatedThinking = "";
+  let rawProviderResponse = "";
+  const MAX_RAW_CAPTURE = 500 * 1024;
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -129,7 +131,8 @@ export function createSSEStream(options = {}) {
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,
-        thinking: accumulatedThinking
+        thinking: accumulatedThinking,
+        rawProviderResponse: rawProviderResponse || accumulatedContent
       }, finalUsage, ttftAt);
     }
   };
@@ -153,6 +156,9 @@ export function createSSEStream(options = {}) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
+      if (rawProviderResponse.length < MAX_RAW_CAPTURE) {
+        rawProviderResponse += text.slice(0, MAX_RAW_CAPTURE - rawProviderResponse.length);
+      }
       reqLogger?.appendProviderChunk?.(text);
 
       const lines = buffer.split("\n");
@@ -474,7 +480,12 @@ export function createSSEStream(options = {}) {
       trackPendingRequest(model, provider, connectionId, false);
       try {
         const remaining = decoder.decode();
-        if (remaining) buffer += remaining;
+        if (remaining) {
+          buffer += remaining;
+          if (rawProviderResponse.length < MAX_RAW_CAPTURE) {
+            rawProviderResponse += remaining.slice(0, MAX_RAW_CAPTURE - rawProviderResponse.length);
+          }
+        }
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
           if (buffer) {

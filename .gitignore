@@ -102,3 +102,5 @@ graphify-out/*
 start-dev-silent.cjs
 debug.log
 .scratch/
+pnpm-lock.yaml
+~/
