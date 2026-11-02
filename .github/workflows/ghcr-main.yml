@@ -1,0 +1,278 @@
+name: Build and Push Docker Image to GHCR (Main)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ghcr-main-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare build metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    outputs:
+      branch: ${{ steps.meta.outputs.branch }}
+      commit: ${{ steps.meta.outputs.commit }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      version: ${{ steps.meta.outputs.version }}
+      ghcr_image: ${{ steps.meta.outputs.ghcr_image }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          COMMIT="${{ github.sha }}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          VERSION="$(node -p "require('./package.json').version")"
+          REPO_LOWER="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          GHCR_IMAGE="ghcr.io/${REPO_LOWER}"
+
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_image=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
+
+          echo "Branch: ${BRANCH}"
+          echo "Commit: ${COMMIT} (${SHORT_SHA})"
+          echo "Version: ${VERSION}"
+          echo "GHCR Image: ${GHCR_IMAGE}"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            suffix: arm64
+            runner: ubuntu-24.04-arm
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push platform image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+            ALPINE_MIRROR=${{ vars.ALPINE_MIRROR || 'dl-cdn.alpinelinux.org' }}
+            NPM_REGISTRY=${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org/' }}
+          labels: |
+            org.opencontainers.image.title=9router
+            org.opencontainers.image.description=Local AI routing gateway + dashboard
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha,scope=9router-ci-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=9router-ci-${{ matrix.suffix }}
+          provenance: false
+          sbom: false
+
+      - name: Smoke-test platform image before publishing digest artifact
+        env:
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          container="9router-smoke-${GITHUB_RUN_ID}-${{ matrix.suffix }}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --name "$container" \
+            --platform "$PLATFORM" \
+            --publish 20128:20128 \
+            "${GHCR_IMAGE}@${IMAGE_DIGEST}"
+
+          for attempt in {1..45}; do
+            if curl --fail --silent --show-error http://127.0.0.1:20128/api/health; then
+              echo "${PLATFORM} health check passed"
+              exit 0
+            fi
+            if (( attempt % 5 == 0 )); then
+              echo "Waiting for ${PLATFORM} health check (${attempt}/45)" >&2
+            fi
+            sleep 2
+          done
+
+          echo "${PLATFORM} health check failed; container logs follow:" >&2
+          docker logs "$container" || true
+          exit 1
+
+      - name: Save image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE_DIGEST"
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s\n' "$IMAGE_DIGEST" > "$RUNNER_TEMP/digests/${{ matrix.suffix }}.txt"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.suffix }}
+          path: ${{ runner.temp }}/digests/${{ matrix.suffix }}.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish and verify multi-arch manifest
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BRANCH: ${{ needs.prepare.outputs.branch }}
+      SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and verify multi-arch manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digest_files=("$RUNNER_TEMP"/digests/*.txt)
+
+          if [[ "${#digest_files[@]}" -ne 2 ]]; then
+            echo "Expected two platform digests, found ${#digest_files[@]}" >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            digest="$(tr -d '\n' < "$digest_file")"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Invalid image digest in $digest_file: $digest" >&2
+              exit 1
+            fi
+            sources+=("${GHCR_IMAGE}@${digest}")
+          done
+
+          # Create multi-arch manifest with all relevant tags
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE}:latest" \
+            --tag "${GHCR_IMAGE}:${BRANCH}" \
+            --tag "${GHCR_IMAGE}:${VERSION}" \
+            --tag "${GHCR_IMAGE}:sha-${SHORT_SHA}" \
+            "${sources[@]}"
+
+          docker buildx imagetools inspect "${GHCR_IMAGE}:latest" | tee "$RUNNER_TEMP/manifest.txt"
+          docker buildx imagetools inspect --raw "${GHCR_IMAGE}:latest" > "$RUNNER_TEMP/manifest.json"
+
+          expected=$'linux/amd64\nlinux/arm64'
+          actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/manifest.json")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Manifest platforms do not match expected:" >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Smoke-test resolved manifest
+        run: |
+          set -Eeuo pipefail
+          container="9router-manifest-smoke-${GITHUB_RUN_ID}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --name "$container" \
+            --platform linux/amd64 \
+            --publish 20128:20128 \
+            "${GHCR_IMAGE}:sha-${SHORT_SHA}"
+
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:20128/api/health; then
+              echo "Resolved manifest health check passed"
+              exit 0
+            fi
+            if (( attempt % 5 == 0 )); then
+              echo "Waiting for resolved manifest health check (${attempt}/30)" >&2
+            fi
+            sleep 2
+          done
+
+          echo "Resolved manifest health check failed; container logs follow:" >&2
+          docker logs "$container" || true
+          exit 1
+
+      - name: Output summary
+        run: |
+          {
+            echo "### 🚀 Published to GHCR"
+            echo "- \`${GHCR_IMAGE}:latest\`"
+            echo "- \`${GHCR_IMAGE}:${BRANCH}\`"
+            echo "- \`${GHCR_IMAGE}:${VERSION}\`"
+            echo "- \`${GHCR_IMAGE}:sha-${SHORT_SHA}\`"
+            echo ""
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
+          } >> "$GITHUB_STEP_SUMMARY"
