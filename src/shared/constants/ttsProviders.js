@@ -94,10 +94,14 @@ export const TTS_PROVIDER_CONFIG = {
     voiceSource: "config",
   },
   "cartesia": {
+    hasLanguageDropdown: false,
     hasModelSelector: true,
-    hasBrowseButton: false,
+    hasBrowseButton: true,
     hasVoiceIdInput: true,
-    voiceSource: "config",
+    voiceSource: "api-language",
+    modelKey: "cartesia-tts-models",
+    apiEndpoint: "/api/media-providers/tts/cartesia/voices",
+    defaultVoiceId: "6ccbfb76-1fc6-48f7-b71d-91ac6298247b",
   },
   "playht": {
     hasModelSelector: true,

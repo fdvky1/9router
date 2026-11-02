@@ -2,6 +2,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 
 // Provider → internal voices API. Edge/local-device share the generic endpoint.
 const PROVIDER_API = {
+  cartesia: (origin) => `${origin}/api/media-providers/tts/cartesia/voices`,
   elevenlabs: (origin) => `${origin}/api/media-providers/tts/elevenlabs/voices`,
   deepgram: (origin) => `${origin}/api/media-providers/tts/deepgram/voices`,
   inworld: (origin) => `${origin}/api/media-providers/tts/inworld/voices`,

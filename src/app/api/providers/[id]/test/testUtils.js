@@ -821,6 +821,15 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const res = await fetchWithConnectionProxy("https://api.assemblyai.com/v1/account", { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
+      case "cartesia": {
+        const res = await fetchWithConnectionProxy("https://api.cartesia.ai/voices", {
+          headers: {
+            "X-API-Key": connection.apiKey,
+            "Cartesia-Version": "2026-08-14",
+          },
+        }, effectiveProxy);
+        return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
+      }
       case "nanobanana": {
         const res = await fetchWithConnectionProxy("https://api.nanobananaapi.ai/v1/models", { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };

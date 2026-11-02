@@ -95,12 +95,12 @@ async function cartesia({ baseUrl, apiKey, text, modelId, voiceId }) {
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": apiKey,
-      "Cartesia-Version": "2024-06-10",
+      "Cartesia-Version": "2026-08-14",
     },
     body: JSON.stringify({
-      model_id: modelId || "sonic-2",
+      model_id: modelId || "sonic-3.5",
       transcript: text,
-      ...(voiceId ? { voice: { mode: "id", id: voiceId } } : {}),
+      voice: { mode: "id", id: voiceId || "6ccbfb76-1fc6-48f7-b71d-91ac6298247b" },
       output_format: { container: "mp3", bit_rate: 128000, sample_rate: 44100 },
     }),
   });

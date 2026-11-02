@@ -211,6 +211,110 @@ function textResponse(body) {
   };
 }
 
+function formatTimestamp(seconds, sep = ",") {
+  const s = Math.max(0, Number(seconds) || 0);
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = Math.floor(s % 60);
+  const ms = Math.floor((s % 1) * 1000);
+  return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}${sep}${String(ms).padStart(3, "0")}`;
+}
+
+function wordsToSubtitles(words) {
+  if (!Array.isArray(words) || words.length === 0) return [];
+  const subs = [];
+  let cur = [];
+  for (const w of words) {
+    cur.push(w);
+    const text = w.word || "";
+    if (cur.length >= 8 || /[.!?]$/.test(text)) {
+      subs.push({
+        start: cur[0].start,
+        end: cur[cur.length - 1].end,
+        text: cur.map((x) => x.word).join(" "),
+      });
+      cur = [];
+    }
+  }
+  if (cur.length > 0) {
+    subs.push({
+      start: cur[0].start,
+      end: cur[cur.length - 1].end,
+      text: cur.map((x) => x.word).join(" "),
+    });
+  }
+  return subs;
+}
+
+function renderSrt(words, fallbackText) {
+  const subs = wordsToSubtitles(words);
+  if (!subs.length) return fallbackText || "";
+  return subs.map((sub, i) => `${i + 1}\n${formatTimestamp(sub.start, ",")} --> ${formatTimestamp(sub.end, ",")}\n${sub.text}\n`).join("\n");
+}
+
+function renderVtt(words, fallbackText) {
+  const subs = wordsToSubtitles(words);
+  if (!subs.length) return `WEBVTT\n\n${fallbackText || ""}\n`;
+  return "WEBVTT\n\n" + subs.map((sub) => `${formatTimestamp(sub.start, ".")} --> ${formatTimestamp(sub.end, ".")}\n${sub.text}\n`).join("\n");
+}
+
+function deriveSegmentsFromWords(words) {
+  const subs = wordsToSubtitles(words);
+  return subs.map((sub, id) => ({
+    id,
+    start: sub.start,
+    end: sub.end,
+    text: sub.text,
+  }));
+}
+
+// Cartesia: multipart POST /stt with x-api-key and Cartesia-Version headers
+async function transcribeCartesia(cfg, file, model, token, formData) {
+  const fd = new FormData();
+  fd.append("file", file, file.name || "audio.wav");
+  fd.append("model", model || "ink-whisper");
+
+  const get = (k) => {
+    const v = formData?.get?.(k);
+    return typeof v === "string" ? v.trim() : "";
+  };
+
+  const language = get("language");
+  if (language) fd.append("language", language);
+
+  const fmt = get("response_format").toLowerCase() || "json";
+  const granularity = get("timestamps_granularity");
+  if (granularity === "word" || fmt === "verbose_json" || fmt === "srt" || fmt === "vtt") {
+    fd.append("timestamp_granularities[]", "word");
+  }
+
+  const headers = {
+    ...buildAuthHeaders(cfg, token),
+    "Cartesia-Version": cfg.version || "2026-08-14",
+  };
+
+  const res = await fetch(cfg.baseUrl, { method: "POST", headers, body: fd });
+  if (!res.ok) return upstreamError(res);
+
+  const data = await res.json();
+  const text = typeof data?.text === "string" ? data.text : "";
+  const words = Array.isArray(data?.words) ? data.words : [];
+
+  if (fmt === "text") return textResponse(text);
+  if (fmt === "srt") return textResponse(renderSrt(words, text));
+  if (fmt === "vtt") return textResponse(renderVtt(words, text));
+  if (fmt === "verbose_json") {
+    return jsonResponse({
+      text,
+      language: data?.language ?? null,
+      duration: data?.duration != null ? data.duration : undefined,
+      ...(words.length ? { words } : {}),
+      ...(words.length ? { segments: deriveSegmentsFromWords(words) } : {}),
+    });
+  }
+  return jsonResponse({ text });
+}
+
 // HuggingFace: POST raw binary to {baseUrl}/{model_id}
 async function transcribeHuggingFace(cfg, file, model, token) {
   if (model.includes("..") || model.includes("//")) return createErrorResult(400, "Invalid model ID");
@@ -325,6 +429,7 @@ export async function handleSttCore({ provider, model, formData, credentials, st
       case "huggingface-asr": return await transcribeHuggingFace(cfg, file, model, token);
       case "gemini-stt":      return await transcribeGemini(cfg, file, model, token, formData);
       case "elevenlabs-stt":  return await transcribeElevenLabs(cfg, file, model, token, formData);
+      case "cartesia-stt":    return await transcribeCartesia(cfg, file, model, token, formData);
       default:                return await transcribeOpenAICompatible(cfg, file, model, token, formData);
     }
   } catch (err) {
