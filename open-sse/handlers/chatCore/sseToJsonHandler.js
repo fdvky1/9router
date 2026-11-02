@@ -226,7 +226,8 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         ...ctx,
         latency: { ttft: totalLatency, total: totalLatency },
         tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
-        response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
+        providerResponse: jsonResponse || null,
+        response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown", raw: jsonResponse || null },
         status: "success"
       }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
 
@@ -331,10 +332,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       ...ctx,
       latency: { ttft: totalLatency, total: totalLatency },
       tokens: usage,
+      providerResponse: parsed || null,
       response: {
         content: parsed.choices?.[0]?.message?.content || null,
         thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
-        finish_reason: parsed.choices?.[0]?.finish_reason || "unknown"
+        tool_calls: parsed.choices?.[0]?.message?.tool_calls || null,
+        finish_reason: parsed.choices?.[0]?.finish_reason || "unknown",
+        raw: parsed || null,
       },
       status: "success"
     }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});

@@ -14,11 +14,11 @@ const OPTIONAL_PARAMS = [
 ];
 
 export function extractRequestConfig(body, stream) {
-  const config = { messages: body.messages || [], model: body.model, stream };
-  for (const param of OPTIONAL_PARAMS) {
-    if (body[param] !== undefined) config[param] = body[param];
-  }
-  return config;
+  if (!body || typeof body !== "object") return { stream };
+  return {
+    ...body,
+    stream: stream !== undefined ? stream : body.stream,
+  };
 }
 
 export function extractUsageFromResponse(responseBody) {

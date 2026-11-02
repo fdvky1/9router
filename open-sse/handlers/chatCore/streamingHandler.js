@@ -130,6 +130,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     };
     const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    const rawProviderResponse = contentObj?.rawProviderResponse || safeContent;
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -137,8 +138,13 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      providerResponse: rawProviderResponse,
+      response: {
+        content: safeContent,
+        thinking: safeThinking,
+        tool_calls: contentObj?.tool_calls || undefined,
+        type: "streaming",
+      },
       pxpipe,
       status: "success"
     }, { id: streamDetailId })).catch(err => {
