@@ -49,11 +49,16 @@ const HEADER_HOOKS = {
   // The same request WITH these headers passes channel verification and gets
   // as far as the real rate limiter (429 / 6004).
   codebuddyHeaders: (h) => {
+    // Fill in only what is missing. A caller (or the intl executor, which
+    // owns the same ids with its own casing rules) may already have set
+    // them; writing a second key that differs only in case would leave the
+    // gateway reading one and the test seeing the other.
+    const has = (name) => Object.keys(h).some((key) => key.toLowerCase() === name.toLowerCase());
     const requestId = randomUUID();
-    h["X-Request-ID"] = requestId;
-    h["X-Conversation-ID"] = randomUUID();
-    h["X-Conversation-Request-ID"] = requestId;
-    h["X-Conversation-Message-ID"] = requestId;
+    if (!has("X-Request-ID")) h["X-Request-ID"] = requestId;
+    if (!has("X-Conversation-ID")) h["X-Conversation-ID"] = randomUUID();
+    if (!has("X-Conversation-Request-ID")) h["X-Conversation-Request-ID"] = requestId;
+    if (!has("X-Conversation-Message-ID")) h["X-Conversation-Message-ID"] = requestId;
   },
   // Stable device_id from OAuth connection (CLIProxyAPI KimiTokenStorage.DeviceID)
   kimiHeaders: (h, c) => Object.assign(h, buildKimiHeaders(c?.providerSpecificData?.deviceId)),

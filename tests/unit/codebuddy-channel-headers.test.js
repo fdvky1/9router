@@ -13,7 +13,7 @@ const REQUIRED = [
   "X-Conversation-Message-ID",
 ];
 
-const CREDS = { accessToken: "TESTTOKEN", apiKey: null };
+const CREDS = { accessToken: "TESTTOKEN" };
 
 function buildHeaders(id) {
   const executor = getExecutor(id);
@@ -23,8 +23,12 @@ function buildHeaders(id) {
 describe("codebuddy channel headers", () => {
   for (const id of ["codebuddy-intl", "codebuddy-cn"]) {
     describe(id, () => {
-      it("registers the codebuddyHeaders hook", () => {
-        expect(PROVIDERS[id]?.auth?.hooks).toContain("codebuddyHeaders");
+      it("registers the hook only where the executor does not own the ids", () => {
+        // executors/codebuddy-intl.js builds these ids itself (with casing
+        // rules the generic hook cannot honour), so only cn opts in.
+        const hooks = PROVIDERS[id]?.auth?.hooks ?? [];
+        if (id === "codebuddy-cn") expect(hooks).toContain("codebuddyHeaders");
+        else expect(hooks).not.toContain("codebuddyHeaders");
       });
 
       it("sends the plugin request/conversation ids", () => {
@@ -35,10 +39,13 @@ describe("codebuddy channel headers", () => {
         }
       });
 
-      it("reuses one request id across the request/conversation pair", () => {
+      it("reuses the request id for the message and keeps the conversation id apart", () => {
         const headers = buildHeaders(id);
-        expect(headers["X-Request-ID"]).toBe(headers["X-Conversation-Request-ID"]);
-        expect(headers["X-Conversation-ID"]).not.toBe(headers["X-Conversation-Message-ID"]);
+        // codebuddy-intl documents the mapping: X-Conversation-Message-ID
+        // carries the same value as X-Request-ID, while X-Conversation-ID
+        // is the per-conversation id and must not collide with it.
+        expect(headers["X-Conversation-Message-ID"]).toBe(headers["X-Request-ID"]);
+        expect(headers["X-Conversation-ID"]).not.toBe(headers["X-Request-ID"]);
       });
 
       it("still applies the bearer token after the hook runs", () => {

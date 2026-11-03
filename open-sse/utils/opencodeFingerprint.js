@@ -19,6 +19,7 @@
  */
 import os from "node:os";
 import path from "node:path";
+import { TMP_DIRECTORY, WORKSPACE_DIRECTORY } from "./opencodePreamble.js";
 
 /** Names required by the upstream free-tier gate. */
 export const OPENCODE_FINGERPRINT_TOOLS = ["read", "shell"];
@@ -293,16 +294,14 @@ function noteUnavailableTools(body, flat, names, claude = false) {
 // replacing it. Values mirror a real CLI instance on this host.
 const ENV_TAG = "<env>";
 const ENV_HEADING = "Here is some useful information about the environment you are running in:";
-const ENV_TMP_DIR = path.join(os.tmpdir(), "opencode");
-const ENV_WORKING_DIR = process.cwd();
 const ENV_FINGERPRINT_PROMPT = [
   ENV_HEADING,
   ENV_TAG,
-  `  Working directory: ${ENV_WORKING_DIR}`,
-  `  Workspace root folder: ${ENV_WORKING_DIR}`,
+  `  Working directory: ${WORKSPACE_DIRECTORY}`,
+  `  Workspace root folder: ${WORKSPACE_DIRECTORY}`,
   "  Is directory a git repo: no",
   `  Platform: ${process.platform}`,
-  `  Prefer ${ENV_TMP_DIR} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
+  `  Prefer ${TMP_DIRECTORY} over generic system temporary directories such as /tmp; it is pre-created and approved for external access.`,
   "</env>",
 ].join("\n");
 

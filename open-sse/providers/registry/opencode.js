@@ -4,6 +4,7 @@ export default {
   hasFree: true,
   alias: "oc",
   uiAlias: "oc",
+  aliases: ["oc1"],
   display: {
     name: "OpenCode Free",
     icon: "terminal",
@@ -14,11 +15,18 @@ export default {
   noAuth: true,
   transport: {
     baseUrl: "https://opencode.ai",
+    timeoutMs: 45000,
     headers: {
-      "x-opencode-client": "desktop",
+      "x-opencode-client": "cli",
     },
     forceStream: true,
     noAuth: true,
+    retry: {
+      429: { attempts: 0, delayMs: 0 },
+      502: { attempts: 0, delayMs: 0 },
+      503: { attempts: 0, delayMs: 0 },
+      504: { attempts: 0, delayMs: 0 },
+    },
     // Zen reasoning models reject multi-turn history whose assistant messages
     // carry no reasoning_content (400 missing_required_parameter), and the
     // response pipeline strips the field before it reaches the client, so the

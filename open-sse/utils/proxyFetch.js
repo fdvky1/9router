@@ -332,8 +332,9 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   });
 }
 
-export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+export async function proxyAwareFetch(url, options = {}, proxyOptions = null, directFetch = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
+  const activeDirectFetch = directFetch || options?.directFetch || null;
 
   // Vercel relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
@@ -407,6 +408,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   if (proxyOptions?.strictProxy === true && proxyIntended) {
     throw new Error("[ProxyFetch] Proxy required but none resolved (strictProxy=true)");
   }
+
+  // Direct fetch override (e.g. opencode's TLS ClientHello impersonation)
+  if (activeDirectFetch) return activeDirectFetch(url, options);
 
   // got-scraping disabled — use native fetch directly
   // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed)
