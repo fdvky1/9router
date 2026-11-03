@@ -147,11 +147,16 @@ const translatedSessionCleanup = setInterval(() => {
 }, MEMORY_CONFIG.sessionCleanupIntervalMs);
 if (translatedSessionCleanup.unref) translatedSessionCleanup.unref();
 
-export function translateSessionId(sessionId, clientTool = "") {
+export function translateSessionId(sessionId, clientTool = "", epoch = 0) {
   if (typeof sessionId === "string" && OPENCODE_SESSION_RE.test(sessionId.trim())) {
     return sessionId.trim();
   }
-  const key = `${clientTool || "generic"}\0${sessionId || ""}`;
+  // The epoch is part of the key so a rotation actually mints a new session for
+  // an already-translated conversation. Without it a client that pins its own
+  // session id (Claude Code: `claude:<uuid>` from x-claude-code-session-id)
+  // keeps resolving to the same burned session forever, and the retry loop
+  // re-sends the exhausted quota until it gives up with 429.
+  const key = `${clientTool || "generic"}\0${epoch}\0${sessionId || ""}`;
   const existing = translatedOpencodeSessions.get(key);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -190,6 +195,9 @@ function nativeSession(headers) {
 // that: one stable canonical session per downstream identity, evicted
 // after MEMORY_CONFIG.sessionTtlMs like the other session stores.
 const stableOpencodeSessions = new Map();
+// Per-identity rotation counter. A burned session must not come back through a
+// client-pinned id, so the translation cache is keyed with this epoch too.
+const sessionEpochs = new Map();
 const MAX_STABLE_SESSIONS = 1000;
 const stableSessionCleanup = setInterval(() => {
   const now = Date.now();
@@ -237,7 +245,17 @@ export function stableSessionId(credentials) {
 export function rotateOpencodeSession(credentials) {
   const key = identityKey(credentials);
   stableOpencodeSessions.delete(key);
+  // Advance the epoch for this identity so sessions derived from a client-pinned
+  // id (translateSessionId) also mint fresh instead of resolving to the burned
+  // entry. Bumping the epoch invalidates every translation for the identity at
+  // once — the retry then presents a new session, which upstream treats as a
+  // new free-quota window.
+  sessionEpochs.set(key, (sessionEpochs.get(key) || 0) + 1);
   return stableSessionId(credentials);
+}
+
+function sessionEpoch(credentials) {
+  return sessionEpochs.get(identityKey(credentials)) || 0;
 }
 
 function bodyHasSessionHints(body) {
@@ -312,8 +330,9 @@ function resolveOpencodeSession(body, credentials, providerSessionId, clientTool
     }
   }
 
+  const epoch = sessionEpoch(credentials);
   const hinted = incoming || normalizeSession(providerSessionId);
-  if (hinted) return translateSessionId(hinted, clientTool);
+  if (hinted) return translateSessionId(hinted, clientTool, epoch);
 
   if (credentials?.connectionId || bodyHasSessionHints(body)) {
     let viaManager = null;
@@ -327,7 +346,7 @@ function resolveOpencodeSession(body, credentials, providerSessionId, clientTool
     } catch {
       viaManager = null;
     }
-    if (viaManager) return translateSessionId(viaManager, clientTool);
+    if (viaManager) return translateSessionId(viaManager, clientTool, epoch);
   }
 
   return stableSessionId(credentials);
