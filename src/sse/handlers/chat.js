@@ -30,6 +30,22 @@ import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../s
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 
 /**
+ * True when a failure is OpenCode's per-session free-quota exhaustion.
+ *
+ * The free lane reports it as 429 `FreeUsageLimitError` ("Free usage limit
+ * reached. Free models work in OpenCode…"). It is not an account problem and
+ * not a client mistake: the quota is accounted against the `x-opencode-session`
+ * the request carried, so the only way past it is a different session.
+ */
+function isOpencodeFreeUsageLimit(result) {
+  if (!result || Number(result.status) !== 429) return false;
+  const text = typeof result.error === "string"
+    ? result.error
+    : JSON.stringify(result.error ?? "");
+  return /free\s*usage\s*limit/i.test(text) || /FreeUsageLimitError/i.test(text);
+}
+
+/**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
@@ -275,6 +291,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastError = null;
   let lastStatus = null;
   let lastHeaders = null;
+  // OpenCode burns one session per attempt, so a spent-quota 429 must not loop
+  // forever: the no-auth lane re-selects the same virtual connection no matter
+  // what we exclude, and each retry mints a session that is exhausted too.
+  let opencodeRotations = 0;
+  const MAX_OPENCODE_ROTATIONS = 3;
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
@@ -368,6 +389,30 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         refreshedCredentials.accessToken, credentials.providerSpecificData
       );
       if (quotaResetMs) resetsAtMs = quotaResetMs;
+    }
+
+    // OpenCode free quota is accounted per session id, so a 429 FreeUsageLimitError
+    // means THIS session's window is spent — retrying the same session answers the
+    // same 429 forever. Burn the canonical session so the next attempt mints a
+    // fresh one, then retry. Bounded: the no-auth lane re-selects the same virtual
+    // connection regardless of exclusions, so an unlimited retry would spin here.
+    if (provider === "opencode" && isOpencodeFreeUsageLimit(result)) {
+      if (opencodeRotations < MAX_OPENCODE_ROTATIONS) {
+        opencodeRotations += 1;
+        try {
+          const { rotateOpencodeSession } = await import("open-sse/executors/opencode.js");
+          rotateOpencodeSession(refreshedCredentials);
+        } catch {
+          // A failed rotation must not block the fallback.
+        }
+        log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} SESSION ROTATED (free quota spent, ${opencodeRotations}/${MAX_OPENCODE_ROTATIONS}) → RETRY`);
+        lastError = result.error;
+        lastStatus = result.status;
+        lastHeaders = upstreamResponseHeaders(result.response?.headers);
+        continue;
+      }
+      log.warn("FALLBACK", `⏱ opencode free quota spent after ${MAX_OPENCODE_ROTATIONS} session rotations — returning last error`);
+      return result.response;
     }
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.

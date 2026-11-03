@@ -79,6 +79,10 @@ export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict 
           title={`Allowed for "${apiKey.name}"`}
           addedModelValues={access.allow}
           closeOnSelect={false}
+          // An allow list is not chat-only: image, TTS, STT, embedding, search and
+          // fetch targets are gated by the same list, so the picker must offer
+          // every service kind instead of the default LLM-only view.
+          allKinds
         />
       )}
     </div>

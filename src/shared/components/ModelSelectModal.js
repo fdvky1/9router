@@ -19,8 +19,13 @@ const PROVIDER_ORDER = [
   ...Object.keys(APIKEY_PROVIDERS),
 ];
 
-// Providers that need no auth — always show in model selector
-const NO_AUTH_PROVIDER_IDS = Object.keys(FREE_PROVIDERS).filter(id => FREE_PROVIDERS[id].noAuth);
+// Providers that need no auth — always show in model selector.
+// Both keyless categories count: "free" and "freeTier" (edge-tts, google-tts,
+// local-device, coqui, tortoise) hold no connection at all, so gating them on
+// connections hid them from every picker.
+const NO_AUTH_PROVIDER_IDS = [...Object.entries(FREE_PROVIDERS), ...Object.entries(FREE_TIER_PROVIDERS)]
+  .filter(([, p]) => p.noAuth)
+  .map(([id]) => id);
 
 // Providers with per-account live catalogs via /api/providers/[id]/models.
 // Static registry stays as fallback when live fetch fails or is empty.
@@ -89,6 +94,7 @@ export default function ModelSelectModal({
   addedModelValues = [],
   closeOnSelect = true,
   allowProviderWildcard = false,
+  allKinds = false,
 }) {
   // Live-fetched connections on modal open, fallback to activeProviders prop
   const [fetchedConnections, setFetchedConnections] = useState(null);
@@ -116,13 +122,14 @@ export default function ModelSelectModal({
   // Filter effectiveConnections by active state and serviceKinds when kindFilter set (e.g. "webSearch", "webFetch")
   const filteredActiveProviders = useMemo(() => {
     const activeOnly = effectiveConnections.filter((p) => p && p.isActive !== false);
-    if (!kindFilter) return activeOnly;
+    // allKinds (per-key access lists) shows every service kind, so no kind gate.
+    if (!kindFilter || allKinds) return activeOnly;
     return activeOnly.filter((p) => {
       const info = AI_PROVIDERS[p.provider];
       const kinds = info?.serviceKinds || ["llm"];
       return kinds.includes(kindFilter);
     });
-  }, [effectiveConnections, kindFilter]);
+  }, [effectiveConnections, kindFilter, allKinds]);
 
   // Set of provider IDs that have connections configured, but ALL of them are deactivated (isActive === false)
   const deactivatedProviderIds = useMemo(() => {
@@ -236,6 +243,9 @@ export default function ModelSelectModal({
 
     // Filter a models[] array by kindFilter (keep only matching kind)
     const filterByKind = (models) => {
+      // "All kinds" mode (per-key access lists): every kind is a legal target, so
+      // a media model must be listable next to a chat model.
+      if (allKinds) return models;
       // No kindFilter means the LLM selector. Keep custom models visible because
       // user-added models may have typed capabilities (for example imageToText)
       // while still being valid chat/combo targets.
@@ -248,7 +258,7 @@ export default function ModelSelectModal({
     const activeConnectionIds = filteredActiveProviders.map(p => p.provider);
 
     // No-auth providers: filter by kindFilter as well
-    const noAuthIds = (kindFilter
+    const noAuthIds = (kindFilter && !allKinds
       ? NO_AUTH_PROVIDER_IDS.filter((id) => (AI_PROVIDERS[id]?.serviceKinds || ["llm"]).includes(kindFilter))
       : NO_AUTH_PROVIDER_IDS).filter((id) => !deactivatedProviderIds.has(id));
 
@@ -288,8 +298,12 @@ export default function ModelSelectModal({
       const providerInfo = allProviders[providerId] || { name: providerId, color: "#666" };
       const isCustomProvider = isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
 
-      // For provider-as-model kinds (webSearch/webFetch): emit a single entry where value === providerId
-      if (kindFilter && PROVIDER_AS_MODEL_KINDS.has(kindFilter)) {
+      // For provider-as-model kinds (webSearch/webFetch): emit a single entry where value === providerId.
+      // "All kinds" mode has no kind to key off, so surface search/fetch-only providers too —
+      // they are legal allow-list entries (the gate matches them by provider id).
+      const providerAsModelKinds = providerInfo.serviceKinds || ["llm"];
+      const isProviderAsModelOnly = providerAsModelKinds.every((k) => PROVIDER_AS_MODEL_KINDS.has(k));
+      if ((kindFilter && PROVIDER_AS_MODEL_KINDS.has(kindFilter)) || (allKinds && isProviderAsModelOnly)) {
         groups[providerId] = {
           name: providerInfo.name,
           alias,
@@ -319,7 +333,16 @@ export default function ModelSelectModal({
 
         // For typed kinds, only include hardcoded typed models (aliases are typically LLM-only and lack type info)
         let combined = aliasModels;
-        if (kindFilter && TYPED_KINDS.has(kindFilter)) {
+        if (allKinds) {
+          // Per-key access lists: aliases + every declared model of every kind,
+          // deduped by value (openrouter is passthrough *and* declares media models).
+          const registeredAll = customRegisteredModels;
+          const seen = new Set([...aliasModels, ...registeredAll].map((m) => m.value));
+          const declared = getModelsByProviderId(providerId)
+            .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
+            .filter((m) => !seen.has(m.value));
+          combined = [...registeredAll, ...aliasModels, ...declared];
+        } else if (kindFilter && TYPED_KINDS.has(kindFilter)) {
           const registeredTyped = customRegisteredModels.filter((m) => getModelKind(m) === kindFilter);
           combined = [
             ...registeredTyped,
@@ -500,7 +523,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, allKinds, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels]);
 
   // Parse search query into structured query (regex, positive tokens, negative tokens)
   const parsedQuery = useMemo(() => parseSearchQuery(searchQuery), [searchQuery]);

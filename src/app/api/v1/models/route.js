@@ -3,6 +3,7 @@ import {
   ALIAS_TO_ID,
   AI_PROVIDERS,
   FREE_PROVIDERS,
+  FREE_TIER_PROVIDERS,
   getProviderAlias,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
@@ -367,8 +368,11 @@ export async function buildModelsList(kindFilter, options = {}) {
     }
   }
 
-  // Include no-auth free providers (e.g. opencode) so their models are exposed in /v1/models
-  for (const [id, provider] of Object.entries(FREE_PROVIDERS || {})) {
+  // Include no-auth free providers (e.g. opencode) so their models are exposed in /v1/models.
+  // Both keyless categories count: "freeTier" holds the keyless media lanes
+  // (edge-tts, google-tts, local-device, coqui, tortoise), which have no
+  // connection to iterate and would otherwise be absent from every catalog.
+  for (const [id, provider] of [...Object.entries(FREE_PROVIDERS || {}), ...Object.entries(FREE_TIER_PROVIDERS || {})]) {
     if (provider?.noAuth && !activeConnectionByProvider.has(id)) {
       activeConnectionByProvider.set(id, {
         id: "noauth",

@@ -15,7 +15,9 @@
 //     routes elsewhere (e.g. `MAIN` when the combo is `Main`, which routes to
 //     `openai/MAIN`) is not;
 //   * search/fetch (provider IS the model) are allowed iff the resolved
-//     provider id is listed, or the request is a listed combo.
+//     provider id is listed, or the request is a listed combo;
+//   * a TTS/STT request carries its voice in the model string
+//     ("openai/tts-1/alloy"), so the voice-less form matches the listed model.
 //
 // An allowed combo grants its members when they are reached THROUGH that combo
 // (the check runs once, on the requested target, before combo expansion). It
@@ -25,7 +27,8 @@
 import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
 import { getCombos } from "@/lib/db/repos/combosRepo.js";
 import { getModelInfo, getComboModels } from "./model.js";
-import { resolveProviderId } from "@/shared/constants/providers.js";
+import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
+import { getModelsByProviderId, getModelKind } from "@/shared/constants/models.js";
 import {
   KEY_ACCESS_COMBO_OWNER,
   KEY_ACCESS_PROVIDER_AS_MODEL_KINDS,
@@ -37,6 +40,24 @@ import * as log from "../utils/logger.js";
 
 const lower = (s) => String(s).toLowerCase();
 const canonicalModel = (provider, model) => lower(`${provider}/${model}`);
+
+// TTS addresses a voice through the model string ("openai/tts-1/alloy",
+// "elevenlabs/eleven_multilingual_v2/<voiceId>"), so the resolved model carries
+// a "/<voice>" tail that no allow-list entry ever spells out. When the prefix is
+// a declared model of that provider, the voice-less form is the same target and
+// must match the same entry — otherwise every voiced call 403s even though the
+// operator listed the model.
+function canonicalCandidates(provider, model) {
+  const out = [canonicalModel(provider, model)];
+  const slash = String(model).indexOf("/");
+  if (slash <= 0) return out;
+  const base = String(model).slice(0, slash);
+  const declared = getModelsByProviderId(resolveProviderId(provider));
+  if (declared.some((m) => m?.id === base && ["tts", "stt"].includes(getModelKind(m)))) {
+    out.push(canonicalModel(provider, base));
+  }
+  return out;
+}
 
 /**
  * The client key, read from the same places and in the same order as the
@@ -94,8 +115,18 @@ async function getAllowSets(ctx) {
       combos.add(key);
       continue;
     }
+    // A bare token that names a real provider is a provider-as-model entry
+    // (search/fetch), not a model. Resolving it as a model would invent a
+    // phantom target on whatever provider `inferProviderFromModelName` guesses,
+    // so stop here instead.
+    if (!entry.includes("/") && AI_PROVIDERS[resolveProviderId(entry)]) {
+      providers.add(lower(resolveProviderId(entry)));
+      continue;
+    }
     const info = await getModelInfo(entry);
-    if (info?.provider && info.model) models.add(canonicalModel(info.provider, info.model));
+    if (info?.provider && info.model) {
+      for (const c of canonicalCandidates(info.provider, info.model)) models.add(c);
+    }
     if (!entry.includes("/")) providers.add(lower(resolveProviderId(entry)));
   }
   ctx._sets = { combos, models, providers };
@@ -107,7 +138,7 @@ async function isModelStringAllowed(ctx, requested) {
   const info = await getModelInfo(requested);
   // provider null ⇔ an existing combo with no members (routes nowhere).
   if (!info?.provider) return sets.combos.has(lower(requested));
-  return sets.models.has(canonicalModel(info.provider, info.model));
+  return canonicalCandidates(info.provider, info.model).some((c) => sets.models.has(c));
 }
 
 export function keyAccessDeniedResponse(ctx, requested) {
@@ -142,7 +173,9 @@ export async function enforceKeyAccessResolved(ctx, requested, provider, model) 
   const label = requested || (provider ? `${provider}/${model ?? ""}` : "");
   if (!provider || !model) return keyAccessDeniedResponse(ctx, label);
   const sets = await getAllowSets(ctx);
-  return sets.models.has(canonicalModel(provider, model)) ? null : keyAccessDeniedResponse(ctx, label);
+  return canonicalCandidates(provider, model).some((c) => sets.models.has(c))
+    ? null
+    : keyAccessDeniedResponse(ctx, label);
 }
 
 /**
@@ -193,7 +226,7 @@ export async function filterModelsListForKey(ctx, list) {
       if (sets.providers.has(lower(info.provider))) out.push(entry);
       continue;
     }
-    if (sets.models.has(canonicalModel(info.provider, info.model))) out.push(entry);
+    if (canonicalCandidates(info.provider, info.model).some((c) => sets.models.has(c))) out.push(entry);
   }
   return out;
 }
