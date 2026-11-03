@@ -27,6 +27,38 @@ const MEDIA_KEYS = new Set([
   "modelsFetcher", "mediaPriority", "hiddenKinds",
 ]);
 
+// Media catalogs are declared inside their per-kind config block
+// (`ttsConfig.models`, `embeddingConfig.models`, …) instead of the top-level
+// `models[]`. Fold them into PROVIDER_MODELS so every consumer — dashboard
+// pickers, /v1/models, per-key access lists — reads one catalog per provider.
+// Without this, a provider that declares its models only there (aws-polly,
+// jina, inworld, playht, fish-audio, coqui, tortoise) has no catalog at all and
+// cannot be selected anywhere, not even for "restrict access".
+const MEDIA_MODEL_FIELDS = [
+  ["ttsConfig", "tts"],
+  ["sttConfig", "stt"],
+  ["embeddingConfig", "embedding"],
+  ["imageConfig", "image"],
+  ["imageToTextConfig", "imageToText"],
+  ["videoConfig", "video"],
+  ["musicConfig", "music"],
+  ["systemoneConfig", "systemone"],
+];
+
+// Config-block models carry no `kind`; tag them with the block's kind so the
+// catalog is filterable. An explicit `kind`/`type` on the entry always wins.
+function mediaCatalogModels(entry) {
+  const out = [];
+  for (const [field, kind] of MEDIA_MODEL_FIELDS) {
+    for (const raw of entry[field]?.models || []) {
+      const model = typeof raw === "string" ? { id: raw } : raw;
+      if (!model?.id) continue;
+      out.push({ kind, ...model });
+    }
+  }
+  return out;
+}
+
 export const PROVIDERS = {};
 export const PROVIDER_MODELS = {};
 export const PROVIDER_OAUTH = {};
@@ -37,6 +69,18 @@ for (const entry of REGISTRY) {
     if (entry.transports) PROVIDERS[entry.id].transports = entry.transports;
   }
   if (entry.models !== undefined) PROVIDER_MODELS[entry.alias || entry.id] = entry.models.map(normalizeModel);
+  // Providers that declare models only inside a per-kind config block still need a
+  // catalog entry, so merge those in (deduped by id; the top-level entry wins).
+  const mediaModels = mediaCatalogModels(entry);
+  if (mediaModels.length) {
+    const key = entry.alias || entry.id;
+    const existing = PROVIDER_MODELS[key] || [];
+    const seen = new Set(existing.map((m) => m.id));
+    PROVIDER_MODELS[key] = [
+      ...existing,
+      ...mediaModels.filter((m) => !seen.has(m.id)).map(normalizeModel),
+    ];
+  }
   if (entry.oauth) PROVIDER_OAUTH[entry.id] = entry.oauth;
   // Build PROVIDER_MEDIA from top-level fields (post-migration) + legacy entry.media
   const mediaFields = {};
