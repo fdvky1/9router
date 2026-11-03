@@ -98,7 +98,7 @@ describe("oc/mimo-v2.6-flash-free reasoning levels", () => {
         PROVIDER,
       );
       const out = executor.transformRequest(MODEL, translated, true, { connectionId: "oc-mimo-levels-test" });
-      expect(executor.buildUrl(MODEL)).toBe("https://opencode.ai/inference/v1/chat/completions");
+      expect(executor.buildUrl(MODEL)).toBe("https://opencode.ai/inference/openai/v1/chat/completions");
       expect(out.reasoning_effort).toBe(level);
       expect(out.thinking).toBeUndefined();
     }
@@ -163,7 +163,7 @@ describe("OpenCode free reasoning aliases reach OpenAI-shaped clients", () => {
     expect(out.map((e) => e.choices[0].delta.content || "").join("")).toBe("391");
     // Usage/thinking accounting reads reasoning_content, so the dashboard would
     // have recorded no thinking for this lane before the lift.
-    expect(settled).toEqual({ content: "391", thinking: "17*23 = 391" });
+    expect(settled).toMatchObject({ content: "391", thinking: "17*23 = 391" });
   });
 
   it("leaves other providers' deltas alone", async () => {

@@ -7,8 +7,10 @@ import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { isMuseSparkModel } from "../providers/models/helpers.js";
 import { applyFingerprintTools } from "../utils/opencodeFingerprint.js";
-import { opencodeTlsFetch } from "../services/opencodeTlsClient.js";
+import { OpencodeTlsUnavailableError, opencodeTlsFetch } from "../services/opencodeTlsClient.js";
 import { ANTHROPIC_API_VERSION } from "../providers/shared.js";
+import { applyAgentHarness, loadAgentHarness } from "../utils/opencodeAgentHarness.js";
+import { composePreamble, environmentIdentity } from "../utils/opencodePreamble.js";
 import {
   normalizeResponsesInput,
   clampResponsesCallId,
@@ -16,9 +18,15 @@ import {
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
 
-// OpenCode v2 UA shape: opencode/<channel>/<version>/<client>. Upstream rejects
-// the v1 "opencode/1.18.x" form with 403 FreeTierError since 2026-10-14.
-const OPENCODE_UA = "opencode/latest/2.0.26/cli";
+// Upstream UA shape: "opencode/<version> ai-sdk/provider-utils/<v> runtime/bun/<v>".
+// OpenCode's older "opencode/<channel>/<version>/<client>" form and the
+// "opencode/1.18.x" form are both rejected with 403 FreeTierError since
+// 2026-10-14. Shape as of the 1.19.x CLI (reverse-engineered 2026-10-23 via
+// mitmproxy); it pairs with x-opencode-client: cli, x-opencode-project, and a
+// per-message x-opencode-request: msg_<...>. This executor has to keep
+// mirroring whatever the current CLI sends: a stale UA is how the free tier
+// tells a relay apart from the real client (upstream #5107).
+const OPENCODE_UA = "opencode/latest/2.1.4/cli";
 const OPENCODE_CLIENT = "cli";
 const MAX_SESSION_LENGTH = 256;
 const MAX_TOOL_NAME_LEN = 128;
@@ -27,11 +35,43 @@ const SESSION_FIELD = "_opencodeSession";
 export const OPENCODE_SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-function hasValidOpencodeVersion(ua) {
-  const m = String(ua || "").match(/^opencode\/[a-z0-9-]+\/(\d+)\.\d+\.\d+\/[a-z0-9-]+$/i);
-  return !!m && parseInt(m[1], 10) >= 2;
+// The CLI's project identity is one value per directory: it creates a project row
+// for the directory it runs in and reports that row's id, so the id is stable for
+// an install and changes only when the install moves. Mirroring that as
+// sha1("directory:<cwd>") keeps one identity across restarts - a random value per
+// boot would present every restart as a different project.
+let projectHashCache = "";
+function projectHash() {
+  if (!projectHashCache) {
+    projectHashCache = crypto.createHash("sha1").update(`directory:${process.cwd()}`).digest("hex");
+  }
+  return projectHashCache;
 }
-// Models served by /inference/v1/responses; every other model stays on /chat/completions.
+
+/** Fresh W3C + B3 trace context, regenerated for every request. */
+function randomTraceContext() {
+  const traceId = crypto.randomBytes(16).toString("hex");
+  const spanId = crypto.randomBytes(8).toString("hex");
+  return {
+    b3: `${traceId}-${spanId}-1-${crypto.randomBytes(8).toString("hex")}`,
+    traceparent: `00-${traceId}-${spanId}-01`,
+  };
+}
+
+function hasValidOpencodeVersion(ua) {
+  // Only the real current CLI shape passes through: the older channel shape
+  // ("opencode/<channel>/<major>.<minor>.<patch>/<client>") was the previous
+  // generation and now reads as a stale relay UA, so anything that is not the
+  // current "opencode/<version> ai-sdk/provider-utils/<v> runtime/bun/<v>"
+  // form is replaced with the current UA (reverse-engineered 2026-10-23 via
+  // mitmproxy against CLI 1.19.4). Anything else (curl, python, a pinned UA)
+  // is not the CLI.
+  return /^opencode\/\d+\.\d+\.\d+ ai-sdk\/provider-utils\/[\d.]+ runtime\/bun\/[\d.]+$/i.test(
+    String(ua || "")
+  );
+}
+
+// Models served by /inference/openai/v1/responses; every other model stays on /chat/completions.
 const RESPONSES_MODELS = new Set([
   "muse-spark-1.2-contributor-free",
   "muse-spark-1.3-contributor-free",
@@ -53,6 +93,10 @@ function unstableRandom() {
 // Session prefix = 12 hex of ~(timeMs * 0x1000 + counter), low 48 bits, like the CLI.
 // Upstream decodes it and rejects a non-small counter with 403 FreeTierError
 // (live probes: counter 0–16 pass, >=100 fail), so the counter must stay real.
+// Since Oct 2026 the free quota is tracked per session id, not only per IP:
+// rotating to a fresh minted session after a FreeUsageLimitError resets the
+// quota window (upstream issue #5107), while the stable session keeps working
+// for the happy path.
 const SESSION_PREFIX_MASK = (1n << 48n) - 1n;
 
 function descendingTimeHex(time, counterValue) {
@@ -68,6 +112,21 @@ export function generateSessionId(timestamp = Date.now()) {
   }
   counter++;
   return `ses_${descendingTimeHex(timestamp, counter)}${unstableRandom()}`;
+}
+
+export function generateRequestId(timestamp = Date.now()) {
+  if (timestamp !== lastTimestamp) {
+    lastTimestamp = timestamp;
+    counter = 0;
+  }
+  counter++;
+  const value = BigInt(timestamp) * 0x1000n + BigInt(counter);
+  const time = Array.from({ length: 6 }, (_, index) =>
+    Number((value >> BigInt(40 - 8 * index)) & 0xffn)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
+  return `msg_${time}${unstableRandom()}`;
 }
 
 // Upstream decodes the prefix timestamp and refuses sessions whose time is in
@@ -171,6 +230,16 @@ export function stableSessionId(credentials) {
   return sessionId;
 }
 
+// Burn the stable session for this identity: the next request mints a fresh
+// canonical session, which upstream treats as a new quota window. Called only
+// after a FreeUsageLimitError — a fresh session per request would burn the
+// quota faster, so the stable one stays until it is actually exhausted.
+export function rotateOpencodeSession(credentials) {
+  const key = identityKey(credentials);
+  stableOpencodeSessions.delete(key);
+  return stableSessionId(credentials);
+}
+
 function bodyHasSessionHints(body) {
   try {
     if (!body || typeof body !== "object") return false;
@@ -206,6 +275,19 @@ function bodyHasSessionHints(body) {
 // Strip the thinking suffix "model(level)" so registry lookups hit the base id.
 function baseModelId(model) {
   return String(model || "").replace(/\([^()]+\)\s*$/, "").trim();
+}
+
+/**
+ * The display name the CLI states for a model.
+ *
+ * `# Your Model` reports `Big Pickle` for `big-pickle`, so the registry's name is
+ * what belongs in the preamble. An id the registry does not know is reported as
+ * itself rather than guessed at.
+ */
+function modelDisplayName(config, modelID) {
+  const models = config?.models;
+  if (!Array.isArray(models)) return modelID;
+  return models.find((entry) => entry?.id === modelID)?.name || modelID;
 }
 
 function isResponsesModel(model) {
@@ -327,6 +409,12 @@ function normalizeOpencodeReasoning(model, body) {
   const cleanModel = baseModelId(model || body.model);
   const supportedLevels = getThinkingLevels("opencode", cleanModel);
   let effort = requestedEffort.toLowerCase().trim();
+  // "auto" adaptive is not a valid upstream effort — drop it entirely so the
+  // lane 400s instead of shipping a value the upstream rejects.
+  if (effort === "auto") {
+    delete body.reasoning_effort;
+    return;
+  }
   if ((effort === "max" || effort === "ultra") && supportedLevels?.length && !supportedLevels.includes(effort)) {
     if (effort === "ultra" && supportedLevels.includes("max")) effort = "max";
     else if (supportedLevels.includes("xhigh")) effort = "xhigh";
@@ -347,7 +435,23 @@ function dropAdaptiveReasoningEffort(body) {
   if (body?.reasoning_effort === "auto") delete body.reasoning_effort;
 }
 
+/**
+ * The credential this lane presents.
+ *
+ * `public` is the anonymous identity: one allowance shared by every caller that
+ * sends it, which is why it reads as exhausted for a client that has never used
+ * the tier at all. A connection carrying a key or a Console access token speaks
+ * for that account instead - the same thing the CLI sends after `opencode auth`,
+ * and the only identity whose free allowance is actually its own.
+ */
+function authorizationOf(credentials) {
+  const token = String(credentials?.apiKey || credentials?.accessToken || "").trim();
+  return `Bearer ${token || "public"}`;
+}
+
 export class OpenCodeExecutor extends BaseExecutor {
+  harness = null;
+
   constructor() {
     super("opencode", PROVIDERS.opencode);
   }
@@ -367,6 +471,12 @@ export class OpenCodeExecutor extends BaseExecutor {
     // Zen rejects non-streaming requests on free models with 403 FreeTierError;
     // always stream upstream and let the handler layer aggregate for non-stream clients.
     if (body && typeof body === "object") body.stream = true;
+    if (body && typeof body === "object" && body.reasoning_effort === "auto") {
+      delete body.reasoning_effort;
+    }
+    // The captured harness names the model it was captured against; restate the
+    // per-request blocks so the system prompt agrees with the body.
+    const harness = this.requestHarness(model || body?.model);
     if (isResponsesModel(model || body?.model) && body && typeof body === "object") {
       // ponytail: chỉ model đã xác nhận auto-only; mở allowlist khi có bằng chứng.
       if ("tool_choice" in body && body.tool_choice !== "auto"
@@ -395,11 +505,35 @@ export class OpenCodeExecutor extends BaseExecutor {
       // already supplied tools. ZCode/Claude Code requests normally have
       // non-empty tool arrays; skipping cloaking here triggers 403 FreeTierError.
       applyFingerprintTools(body, true);
+      applyAgentHarness(body, harness, { flat: true });
     } else if (body && typeof body === "object") {
       dropAdaptiveReasoningEffort(body);
       applyFingerprintTools(body, false, { claude: isMessagesModel(model || body?.model) });
+      applyAgentHarness(body, harness);
     }
     return injectReasoningContent({ provider: this.provider, model, body });
+  }
+
+  /**
+   * The harness as this request must present it.
+   *
+   * The captured text carries the identity of the request it was captured from;
+   * `composePreamble` restates the model, date and environment blocks so the
+   * system prompt describes the model the body actually asks for. The tool
+   * manifest is passed through: it does not vary per request.
+   */
+  requestHarness(model) {
+    if (!this.harness?.preamble) return this.harness;
+    const modelID = baseModelId(model) || "unknown";
+    return {
+      preamble: composePreamble(this.harness.preamble, {
+        ...environmentIdentity(),
+        modelName: modelDisplayName(this.config, modelID),
+        modelID,
+        today: new Date(),
+      }),
+      tools: this.harness.tools,
+    };
   }
 
   // The free gate keys on the TLS ClientHello, so a native Node fetch is refused
@@ -408,25 +542,34 @@ export class OpenCodeExecutor extends BaseExecutor {
   // `directFetch` when no proxy is configured). Fail-open: without wreq-js the
   // request still goes out on native fetch instead of erroring here.
   async execute(args) {
+    const { model, body, stream, signal, log, proxyOptions = null } = args;
     const credentials = this.prepareRequestCredentials(args);
+    // Warm the harness cache before the sync transform runs; it resolves from
+    // cache on every request after the first.
+    this.harness = await loadAgentHarness();
     return super.execute({
       ...args,
       credentials,
-      directFetch: (url, options) => opencodeTlsFetch(url, {
-        method: options.method,
-        headers: options.headers,
-        body: options.body,
-      }, { signal: options.signal }),
+      proxyOptions,
+      directFetch: async (url, options = {}) => {
+        try {
+          return await opencodeTlsFetch(url, options, { signal: options.signal });
+        } catch (error) {
+          if (!(error instanceof OpencodeTlsUnavailableError)) throw error;
+          log?.warn?.("OPENCODE", `${error.message}; falling back to native fetch`);
+          return fetch(url, options);
+        }
+      },
     });
   }
 
-  // Free tier moved from /zen/v1 to /inference/v1 (OpenCode v2); /zen/v1 now
-  // answers every free request with 403 FreeTierError.
+  // OpenCode v2 exposes the same models under the OpenAI-compatible prefix.
+  // The free-tier gate rejects /inference/v1 with 429 FreeUsageLimitError.
   buildUrl(model) {
     const base = this.config.baseUrl;
-    if (isResponsesModel(model)) return `${base}/inference/v1/responses`;
-    if (isMessagesModel(model)) return `${base}/inference/v1/messages`;
-    return `${base}/inference/v1/chat/completions`;
+    if (isResponsesModel(model)) return `${base}/inference/openai/v1/responses`;
+    if (isMessagesModel(model)) return `${base}/inference/openai/v1/messages`;
+    return `${base}/inference/openai/v1/chat/completions`;
   }
 
   buildHeaders(credentials, stream = true, url = "") {
@@ -438,22 +581,26 @@ export class OpenCodeExecutor extends BaseExecutor {
     const isOpencodeDownstream = hasValidOpencodeVersion(downstreamUa);
 
     const session = credentials?.[SESSION_FIELD] || this.prepareRequestCredentials({ credentials })[SESSION_FIELD];
+    const project = lower["x-opencode-project"] || projectHash();
+    const trace = randomTraceContext();
 
-    // Mirrors the v2 CLI. Upstream needs x-opencode-session-id next to
-    // x-opencode-session, and rejects any x-opencode-request (v1 only) with 403.
     const headers = {
       "Content-Type": "application/json",
-      "Authorization": "Bearer public",
+      "Authorization": authorizationOf(credentials),
       "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
       "x-opencode-client": lower["x-opencode-client"] || OPENCODE_CLIENT,
       "x-opencode-session": session,
       "x-opencode-session-id": session,
       "x-session-affinity": session,
       "x-session-id": session,
-      "x-opencode-project": lower["x-opencode-project"] || "global",
+      "x-opencode-project": project,
+      b3: trace.b3,
+      traceparent: trace.traceparent,
       "Accept": stream ? "text/event-stream" : "*/*",
     };
     if (url.endsWith("/messages")) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
     return headers;
   }
 }
+
+export default OpenCodeExecutor;

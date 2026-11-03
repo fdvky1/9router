@@ -151,7 +151,7 @@ export class BaseExecutor {
           // Protocol adapters that need their own transport (opencode's TLS
           // fingerprint) override the direct path; proxies still take priority.
           ...(directFetch ? { directFetch } : {}),
-        }, proxyOptions);
+        }, proxyOptions, directFetch);
         clearTimeout(connectTimer);
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";

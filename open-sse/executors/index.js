@@ -52,6 +52,8 @@ const executors = {
   vertex: new VertexExecutor("vertex"),
   "vertex-partner": new VertexExecutor("vertex-partner"),
   opencode: new OpenCodeExecutor(),
+  oc1: new OpenCodeExecutor(),
+  oc: new OpenCodeExecutor(),
   "opencode-go": new OpenCodeGoExecutor(),
   "opencode-zen": new OpenCodeZenExecutor(),
   "grok-web": new GrokWebExecutor(),

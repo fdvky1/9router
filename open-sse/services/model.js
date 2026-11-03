@@ -11,10 +11,13 @@ const MEDIA_ONLY_ALIASES = {
 };
 
 const ALIAS_TO_PROVIDER_ID = { ...MEDIA_ONLY_ALIASES };
+const PROVIDER_ID_TO_NAMES = {};
 for (const entry of REGISTRY) {
   ALIAS_TO_PROVIDER_ID[entry.id] = entry.id;
   if (entry.alias) ALIAS_TO_PROVIDER_ID[entry.alias] = entry.id;
   for (const a of entry.aliases || []) ALIAS_TO_PROVIDER_ID[a] = entry.id;
+  const names = [entry.id, entry.alias, ...(entry.aliases || [])].filter(Boolean);
+  PROVIDER_ID_TO_NAMES[entry.id] = [...new Set(names)];
 }
 
 const BUILTIN_MODEL_ALIASES = {
@@ -26,6 +29,24 @@ const BUILTIN_MODEL_ALIASES = {
  */
 export function resolveProviderAlias(aliasOrId) {
   return ALIAS_TO_PROVIDER_ID[aliasOrId] || aliasOrId;
+}
+
+/**
+ * Every name a model answers to, its own spelling first.
+ *
+ * `oc/big-pickle`, `oc1/big-pickle` and `opencode/big-pickle` are one model, but an
+ * allow-list stores whichever spelling the operator picked when the key was made.
+ * A gate that compares a single spelling refuses the others, so callers check all
+ * of them rather than teaching every key the current alias by heart.
+ */
+export function modelIdSpellings(modelStr) {
+  const raw = String(modelStr || "").trim();
+  const slash = raw.indexOf("/");
+  if (slash <= 0) return [raw];
+  const rest = raw.slice(slash + 1);
+  const providerId = resolveProviderAlias(raw.slice(0, slash));
+  const names = PROVIDER_ID_TO_NAMES[providerId] || [];
+  return [...new Set([raw, ...names.map((name) => `${name}/${rest}`)])];
 }
 
 /**
