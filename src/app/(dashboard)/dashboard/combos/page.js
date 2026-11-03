@@ -1,11 +1,14 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
 import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModal, CapacityBadges, Select, Toggle, Badge, SmartPolicyModal } from "@/shared/components";
+import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
@@ -54,6 +57,11 @@ const STRATEGY_OPTIONS = [
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
 
+const STT_STRATEGY_OPTIONS = [
+  { value: "fallback", label: "Fallback — try in order" },
+  { value: "round-robin", label: "Round Robin — rotate" },
+];
+
 function getPolicyBadgeLabel(strategy = {}) {
   const policy = strategy.smartPolicy || (strategy.sessionSticky === false ? "per-turn" : "smart");
   if (policy === "strict") return "Strict Lock";
@@ -68,9 +76,12 @@ function getPolicyBadgeLabel(strategy = {}) {
 
 export default function CombosPage() {
   const [combos, setCombos] = useState([]);
+  const [sttCombos, setSttCombos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateSttModal, setShowCreateSttModal] = useState(false);
   const [editingCombo, setEditingCombo] = useState(null);
+  const [editingSttCombo, setEditingSttCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
@@ -82,11 +93,46 @@ export default function CombosPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const { copied, copy } = useCopyToClipboard();
 
+  const fetchData = async () => {
+    try {
+      const [combosRes, providersRes, settingsRes] = await Promise.all([
+        fetch("/api/combos"),
+        fetch("/api/providers"),
+        fetch("/api/settings"),
+      ]);
+      const combosData = await combosRes.json();
+      const providersData = await providersRes.json();
+      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+
+      // LLM combos (default/no kind) and STT combos
+      const allCombos = combosData.combos || [];
+      if (combosRes.ok) {
+        setCombos(allCombos.filter((c) => !c.kind || c.kind === "llm"));
+        setSttCombos(allCombos.filter((c) => c.kind === "stt"));
+      }
+      if (providersRes.ok) {
+        setActiveProviders((providersData.connections || []).filter((c) => c.isActive !== false));
+      }
+      setComboStrategies(settingsData.comboStrategies || {});
+      const rawAdapter = settingsData.capacityAdapter || {};
+      const normalized = {};
+      for (const cap of CAPACITY_ADAPTER_CAPS) {
+        normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
+      }
+      setCapacityAdapter(normalized);
+    } catch (error) {
+      console.log("Error fetching data:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchData();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Drop stale selection when the combo list changes (delete / refresh).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     const alive = new Set(combos.map((c) => c.id));
     setSelectedIds((prev) => prev.filter((id) => alive.has(id)));
@@ -181,36 +227,6 @@ export default function CombosPage() {
     }
   };
 
-  const fetchData = async () => {
-    try {
-      const [combosRes, providersRes, settingsRes] = await Promise.all([
-        fetch("/api/combos"),
-        fetch("/api/providers"),
-        fetch("/api/settings"),
-      ]);
-      const combosData = await combosRes.json();
-      const providersData = await providersRes.json();
-      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-
-      // Only LLM combos here - webSearch/webFetch combos belong to media-providers/web
-      if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
-      if (providersRes.ok) {
-        setActiveProviders((providersData.connections || []).filter((c) => c.isActive !== false));
-      }
-      setComboStrategies(settingsData.comboStrategies || {});
-      const rawAdapter = settingsData.capacityAdapter || {};
-      const normalized = {};
-      for (const cap of CAPACITY_ADAPTER_CAPS) {
-        normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
-      }
-      setCapacityAdapter(normalized);
-    } catch (error) {
-      console.log("Error fetching data:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleSetCapacityAdapter = async (next) => {
     setCapacityAdapter(next);
     try {
@@ -234,6 +250,7 @@ export default function CombosPage() {
       if (res.ok) {
         await fetchData();
         setShowCreateModal(false);
+        setShowCreateSttModal(false);
       } else {
         const err = await res.json();
         alert(err.error || "Failed to create combo");
@@ -253,6 +270,7 @@ export default function CombosPage() {
       if (res.ok) {
         await fetchData();
         setEditingCombo(null);
+        setEditingSttCombo(null);
       } else {
         const err = await res.json();
         alert(err.error || "Failed to update combo");
@@ -278,7 +296,7 @@ export default function CombosPage() {
   };
 
   const handleDelete = async (id) => {
-    const combo = combos.find((c) => c.id === id);
+    const combo = [...combos, ...sttCombos].find((c) => c.id === id);
     setConfirmState({
       title: "Delete Combo",
       message: combo ? `Delete combo "${combo.name}"?` : "Delete this combo?",
@@ -291,6 +309,7 @@ export default function CombosPage() {
               await persistComboStrategies(pruneStrategiesForNames([combo.name]));
             }
             setCombos((prev) => prev.filter((c) => c.id !== id));
+            setSttCombos((prev) => prev.filter((c) => c.id !== id));
             setSelectedIds((prev) => prev.filter((x) => x !== id));
           }
           setConfirmState(null);
@@ -587,6 +606,18 @@ export default function CombosPage() {
         getCaps={getCaps}
       />
 
+      {/* Speech to Text Combos */}
+      <SttCombosSection
+        sttCombos={sttCombos}
+        copied={copied}
+        onCopy={copy}
+        onCreate={() => setShowCreateSttModal(true)}
+        onEdit={(c) => setEditingSttCombo(c)}
+        onDelete={(id) => handleDelete(id)}
+        comboStrategies={comboStrategies}
+        onSetStrategy={handleSetComboStrategy}
+      />
+
       {/* Create Modal - Use key to force remount and reset state */}
       {showCreateModal && (
         <ComboFormModal
@@ -598,6 +629,18 @@ export default function CombosPage() {
         />
       )}
 
+      {/* Create STT Modal */}
+      {showCreateSttModal && (
+        <ComboFormModal
+          key="create-stt"
+          isOpen={showCreateSttModal}
+          onClose={() => setShowCreateSttModal(false)}
+          onSave={handleCreate}
+          activeProviders={activeProviders}
+          kindFilter="stt"
+        />
+      )}
+
       {editingCombo && (
         <ComboFormModal
           key={editingCombo.id}
@@ -606,6 +649,18 @@ export default function CombosPage() {
           onClose={() => setEditingCombo(null)}
           onSave={(data) => handleUpdate(editingCombo.id, data)}
           activeProviders={activeProviders}
+        />
+      )}
+
+      {editingSttCombo && (
+        <ComboFormModal
+          key={`edit-stt-${editingSttCombo.id}`}
+          isOpen={!!editingSttCombo}
+          combo={editingSttCombo}
+          onClose={() => setEditingSttCombo(null)}
+          onSave={(data) => handleUpdate(editingSttCombo.id, data)}
+          activeProviders={activeProviders}
+          kindFilter="stt"
         />
       )}
 
@@ -1079,6 +1134,156 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
   );
 }
 
+function SttCombosSection({
+  sttCombos,
+  copied,
+  onCopy,
+  onCreate,
+  onEdit,
+  onDelete,
+  comboStrategies,
+  onSetStrategy,
+}) {
+  return (
+    <div className="flex flex-col gap-3 pt-6 border-t border-border">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-primary text-[20px]">mic</span>
+            <p className="text-sm font-medium">Speech-to-Text (STT) Combos</p>
+          </div>
+          <p className="text-xs text-text-muted mt-0.5">
+            Model combos for audio transcription (<code>/v1/audio/transcriptions</code>) with automatic fallback and rotation.
+          </p>
+        </div>
+        <Button size="sm" icon="add" onClick={onCreate} className="w-full sm:w-auto">
+          Create STT Combo
+        </Button>
+      </div>
+
+      {sttCombos.length === 0 ? (
+        <Card>
+          <div className="text-center py-8">
+            <div className="inline-flex items-center justify-center size-12 rounded-full bg-primary/10 text-primary mb-3">
+              <span className="material-symbols-outlined text-[24px]">mic</span>
+            </div>
+            <p className="text-text-main font-medium mb-1 text-sm">No Speech-to-Text combos yet</p>
+            <p className="text-xs text-text-muted mb-3 max-w-md mx-auto">
+              Create an audio transcription combo with automatic fallback (e.g. Groq Whisper → Cloudflare Whisper → OpenAI Whisper).
+            </p>
+            <Button size="sm" icon="add" onClick={onCreate}>
+              Create STT Combo
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {sttCombos.map((combo) => {
+            const strategy = comboStrategies[combo.name] || {};
+            const currentStrategy = strategy.fallbackStrategy || "fallback";
+            return (
+              <Card key={combo.id} padding="sm">
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  {/* Left: icon + name + models */}
+                  <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
+                    <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <span className="material-symbols-outlined text-primary text-[18px]">mic</span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <code className="font-mono text-sm font-medium truncate">{combo.name}</code>
+                        <button
+                          onClick={() => onCopy(combo.name, `stt-${combo.id}`)}
+                          className="p-0.5 rounded text-text-muted hover:text-primary transition-colors"
+                          title="Copy combo name"
+                        >
+                          <span className="material-symbols-outlined text-[15px]">
+                            {copied === `stt-${combo.id}` ? "check" : "content_copy"}
+                          </span>
+                        </button>
+                      </div>
+
+                      {/* Models list */}
+                      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
+                        {combo.models.length === 0 ? (
+                          <span className="text-xs text-text-muted italic">No models</span>
+                        ) : (
+                          combo.models.map((model, idx) => {
+                            const slashIdx = model.indexOf("/");
+                            const prefix = slashIdx > 0 ? model.slice(0, slashIdx) : "";
+                            const pid = resolveProviderId(prefix);
+                            const p = AI_PROVIDERS[pid] || AI_PROVIDERS[prefix];
+                            return (
+                              <div
+                                key={`${model}-${idx}`}
+                                className="inline-flex items-center gap-1 rounded bg-black/5 px-2 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5"
+                              >
+                                <span className="text-[10px] opacity-60 font-semibold">{idx + 1}.</span>
+                                <div
+                                  className="size-4 rounded flex items-center justify-center shrink-0"
+                                  style={{ backgroundColor: `${(p?.color ?? "#888")}15` }}
+                                >
+                                  <ProviderIcon
+                                    src={`/providers/${pid}.png`}
+                                    alt={p?.name || prefix}
+                                    size={14}
+                                    className="object-contain rounded max-w-[14px] max-h-[14px]"
+                                    fallbackText={p?.textIcon || prefix.slice(0, 2).toUpperCase()}
+                                    fallbackColor={p?.color}
+                                  />
+                                </div>
+                                <span>{model}</span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: Strategy select + Playground link + Edit + Delete */}
+                  <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+                    <div className="w-36 sm:w-44">
+                      <Select
+                        options={STT_STRATEGY_OPTIONS}
+                        value={currentStrategy}
+                        onChange={(e) => onSetStrategy(combo.name, { fallbackStrategy: e.target.value })}
+                        selectClassName="py-1 text-xs"
+                      />
+                    </div>
+                    <Link
+                      href={`/dashboard/media-providers/combo/${combo.id}`}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-border text-xs text-text-muted hover:text-primary hover:border-primary/40 transition-colors"
+                      title="Test in Playground"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">play_circle</span>
+                      <span className="hidden sm:inline">Playground</span>
+                    </Link>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon="edit"
+                      onClick={() => onEdit(combo)}
+                      title="Edit combo"
+                    />
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      icon="delete"
+                      onClick={() => onDelete(combo.id)}
+                      title="Delete combo"
+                    />
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
@@ -1271,7 +1476,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   const handleSave = async () => {
     if (!validateName(name)) return;
     setSaving(true);
-    await onSave({ name: name.trim(), models });
+    await onSave({ name: name.trim(), models, ...(combo?.kind || kindFilter ? { kind: combo?.kind || kindFilter } : {}) });
     setSaving(false);
   };
 
@@ -1282,7 +1487,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
       <Modal
         isOpen={isOpen}
         onClose={onClose}
-        title={isEdit ? "Edit Combo" : "Create Combo"}
+        title={isEdit ? (kindFilter === "stt" ? "Edit STT Combo" : "Edit Combo") : (kindFilter === "stt" ? "Create STT Combo" : "Create Combo")}
       >
         <div className="flex flex-col gap-3">
           {/* Name */}
@@ -1371,7 +1576,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
           onDeselect={handleDeselectModel}
           activeProviders={activeProviders}
           modelAliases={modelAliases}
-          title="Add Model to Combo"
+          title={kindFilter === "stt" ? "Add STT Model to Combo" : "Add Model to Combo"}
           kindFilter={kindFilter}
           addedModelValues={models}
           closeOnSelect={false}
