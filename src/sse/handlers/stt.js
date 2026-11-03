@@ -3,8 +3,9 @@ import {
   getProviderCredentials, markAccountUnavailable, clearAccountError,
 } from "../services/auth.js";
 import { getSettings, getCustomModels } from "@/lib/localDb";
-import { getModelInfo } from "../services/model.js";
-import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
+import { getModelInfo, getComboModels } from "../services/model.js";
+import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
+import { handleComboChat } from "open-sse/services/combo.js";
 import { handleSttCore } from "open-sse/handlers/sttCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -37,6 +38,20 @@ async function resolveCustomModelTransport(provider, model) {
   }
 }
 
+function cloneFormDataWithModel(formData, modelStr) {
+  const fd = new FormData();
+  for (const [key, value] of formData.entries()) {
+    if (key === "model") continue;
+    if (value instanceof Blob && typeof value.name === "string") {
+      fd.append(key, value, value.name);
+    } else {
+      fd.append(key, value);
+    }
+  }
+  fd.append("model", modelStr);
+  return fd;
+}
+
 export async function handleStt(request) {
   let formData;
   try {
@@ -59,23 +74,53 @@ export async function handleStt(request) {
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
 
+  // Per-key access control: requested target, before combo expansion.
+  const keyAccessDenied = await enforceKeyAccess(await getKeyAccessContext(request), modelStr);
+  if (keyAccessDenied) return keyAccessDenied;
+
+  // Combo expansion: model may be a combo name → run fallback/round-robin across models
+  const comboModels = await getComboModels(modelStr);
+  if (comboModels) {
+    const comboStrategies = settings.comboStrategies || {};
+    const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
+    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+    log.info("STT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+    return handleComboChat({
+      body: formData,
+      models: comboModels,
+      handleSingleModel: (fd, m) => handleSingleModelStt(fd, m, request),
+      log,
+      comboName: modelStr,
+      comboStrategy,
+      comboStickyLimit,
+    });
+  }
+
+  return handleSingleModelStt(formData, modelStr, request);
+}
+
+async function handleSingleModelStt(formData, modelStr, request) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
   if (provider === "codex" && model !== "transcribe") return errorResponse(400, "Use model cx/transcribe for Codex STT");
 
-  // Per-key access control: checked before any credential lookup.
-  const keyAccessDenied = await enforceKeyAccessResolved(await getKeyAccessContext(request), modelStr, provider, model);
-  if (keyAccessDenied) return keyAccessDenied;
-
   log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
 
   const modelTransport = await resolveCustomModelTransport(provider, model);
+  const targetFormData = cloneFormDataWithModel(formData, model);
 
   // noAuth providers
   if (!CREDENTIALED_PROVIDERS.has(provider)) {
-    const result = await handleSttCore({ provider, model, formData, sttConfig: AI_PROVIDERS[provider]?.sttConfig, transport: modelTransport });
+    const result = await handleSttCore({
+      provider,
+      model,
+      formData: targetFormData,
+      sttConfig: AI_PROVIDERS[provider]?.sttConfig,
+      transport: modelTransport,
+      signal: request?.signal,
+    });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "STT failed");
   }
@@ -107,9 +152,9 @@ export async function handleStt(request) {
       const proxyOptions = isCodex
         ? await resolveConnectionProxyConfig(credentials._connection?.providerSpecificData || credentials.providerSpecificData)
         : undefined;
-      const args = { provider, model, formData, credentials, sttConfig: AI_PROVIDERS[provider]?.sttConfig, transport: modelTransport, signal: request.signal, proxyOptions };
+      const args = { provider, model, formData: targetFormData, credentials, sttConfig: AI_PROVIDERS[provider]?.sttConfig, transport: modelTransport, signal: request?.signal, proxyOptions };
       result = await handleSttCore(args);
-      if (isCodex && result.status === 401 && credentials.refreshToken && !request.signal.aborted) {
+      if (isCodex && result.status === 401 && credentials.refreshToken && !request?.signal?.aborted) {
         const previous = credentials.accessToken;
         credentials = await checkAndRefreshToken(provider, credentials, { force: true });
         if (credentials.accessToken !== previous) result = await handleSttCore({ ...args, credentials });
@@ -122,7 +167,7 @@ export async function handleStt(request) {
       return errorResponse(HTTP_STATUS.BAD_GATEWAY, "STT credential or transport failure");
     }
 
-    if (request.signal.aborted) return errorResponse(504, "Transcription cancelled");
+    if (request?.signal?.aborted) return errorResponse(504, "Transcription cancelled");
     // Bad audio / unsupported parameters are client errors, not broken accounts.
     if (provider === "codex" && [400, 413, 504].includes(result.status)) {
       return result.response || errorResponse(result.status, result.error);

@@ -394,7 +394,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       object: "model",
       owned_by: "combo",
     };
-    if (combo.kind === "webSearch" || combo.kind === "webFetch") {
+    if (combo.kind === "webSearch" || combo.kind === "webFetch" || combo.kind === "stt") {
       entry.kind = combo.kind;
     } else {
       const comboCaps = aggregateComboCapabilities(combo.models, comboByName, comboSeatCapabilities);

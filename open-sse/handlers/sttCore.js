@@ -32,7 +32,7 @@ async function upstreamError(res) {
   let txt = "";
   try { txt = await res.text(); } catch {}
   let msg = txt || `Upstream error (${res.status})`;
-  try { const j = JSON.parse(txt); msg = j?.error?.message || j?.error || j?.message || msg; } catch {}
+  try { const j = JSON.parse(txt); msg = j?.errors?.[0]?.message || j?.error?.message || j?.error || j?.message || msg; } catch {}
   return createErrorResult(res.status, typeof msg === "string" ? msg : JSON.stringify(msg));
 }
 
@@ -330,6 +330,84 @@ async function transcribeHuggingFace(cfg, file, model, token) {
   return jsonResponse({ text: data.text || "" });
 }
 
+// Cloudflare Workers AI: run model via /accounts/{accountId}/ai/run/{model}
+async function transcribeCloudflare(cfg, file, model, token, formData, credentials) {
+  let url = cfg.baseUrl;
+  if (url.includes("{accountId}")) {
+    const accountId = credentials?.providerSpecificData?.accountId;
+    if (!accountId) {
+      return createErrorResult(HTTP_STATUS.BAD_REQUEST, "cloudflare-ai requires accountId in providerSpecificData");
+    }
+    url = url.replace("{accountId}", accountId);
+  }
+
+  const modelPath = model.startsWith("@cf/") ? model : `@cf/openai/${model}`;
+  if (url.includes("{model}")) {
+    url = url.replace(/\{model\}/g, modelPath);
+  } else if (!url.endsWith(modelPath)) {
+    url = `${url.replace(/\/+$/, "")}/${modelPath}`;
+  }
+
+  const isTurbo = model.includes("whisper-large-v3-turbo");
+  const authHeaders = buildAuthHeaders(cfg, token);
+  const buf = await file.arrayBuffer();
+
+  let res;
+  if (isTurbo) {
+    const b64 = Buffer.from(buf).toString("base64");
+    const bodyObj = { audio: b64 };
+    const get = (k) => {
+      const v = formData?.get?.(k);
+      return typeof v === "string" ? v.trim() : "";
+    };
+    const lang = get("language");
+    if (lang) bodyObj.language = lang;
+    const prompt = get("prompt");
+    if (prompt) bodyObj.initial_prompt = prompt;
+
+    res = await fetch(url, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify(bodyObj),
+    });
+  } else {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": resolveAudioContentType(file) },
+      body: buf,
+    });
+  }
+
+  if (!res.ok) return upstreamError(res);
+
+  const data = await res.json();
+  if (data?.success === false) {
+    const errMsg = data?.errors?.[0]?.message || "Cloudflare Workers AI transcription failed";
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+  }
+
+  const result = data?.result ?? data;
+  const text = typeof result?.text === "string" ? result.text : "";
+  const words = Array.isArray(result?.words) ? result.words : [];
+  const segments = Array.isArray(result?.segments) ? result.segments : [];
+  const vtt = typeof result?.vtt === "string" ? result.vtt : "";
+
+  const fmt = (typeof formData?.get === "function" ? formData.get("response_format") : "")?.toLowerCase() || "json";
+  if (fmt === "text") return textResponse(text);
+  if (fmt === "vtt") return textResponse(vtt || (words.length ? renderVtt(words, text) : `WEBVTT\n\n${text}\n`));
+  if (fmt === "srt") return textResponse(words.length ? renderSrt(words, text) : text);
+  if (fmt === "verbose_json") {
+    return jsonResponse({
+      text,
+      language: result?.transcription_info?.language || (typeof formData?.get === "function" ? formData.get("language") : null) || null,
+      ...(result?.transcription_info?.duration != null ? { duration: result.transcription_info.duration } : {}),
+      ...(words.length ? { words } : {}),
+      ...(segments.length ? { segments } : (words.length ? { segments: deriveSegmentsFromWords(words) } : {})),
+    });
+  }
+  return jsonResponse({ text });
+}
+
 // Default: OpenAI/Groq/Whisper-compatible multipart
 async function transcribeOpenAICompatible(cfg, file, model, token, formData) {
   const fd = new FormData();
@@ -430,6 +508,7 @@ export async function handleSttCore({ provider, model, formData, credentials, st
       case "gemini-stt":      return await transcribeGemini(cfg, file, model, token, formData);
       case "elevenlabs-stt":  return await transcribeElevenLabs(cfg, file, model, token, formData);
       case "cartesia-stt":    return await transcribeCartesia(cfg, file, model, token, formData);
+      case "cloudflare-stt":  return await transcribeCloudflare(cfg, file, model, token, formData, credentials);
       default:                return await transcribeOpenAICompatible(cfg, file, model, token, formData);
     }
   } catch (err) {

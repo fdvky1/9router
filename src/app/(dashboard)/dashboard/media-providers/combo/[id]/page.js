@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, notFound, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { Card, Button, Input, Toggle, ModelSelectModal } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
@@ -22,6 +22,7 @@ const KIND_LABELS = {
   webFetch: "Web Fetch",
   image: "Text to Image",
   tts: "Text To Speech",
+  stt: "Speech To Text",
 };
 
 const EXAMPLE_PATHS = {
@@ -29,6 +30,7 @@ const EXAMPLE_PATHS = {
   webFetch: "/v1/web/fetch",
   image: "/v1/images/generations",
   tts: "/v1/audio/speech",
+  stt: "/v1/audio/transcriptions",
 };
 
 const EXAMPLE_BODIES = {
@@ -36,11 +38,59 @@ const EXAMPLE_BODIES = {
   webFetch: (n) => ({ model: n, url: "https://example.com", format: "markdown" }),
   image: (n) => ({ model: n, prompt: "A cute cat playing piano", n: 1, size: "1024x1024" }),
   tts: (n) => ({ model: n, input: "Hello, this is a test.", voice: "alloy" }),
+  stt: (n) => ({ model: n }),
 };
+
+function createSilentWavBlob() {
+  const sampleRate = 16000;
+  const channels = 1;
+  const bitsPerSample = 16;
+  const durationMs = 250;
+  const sampleCount = Math.max(1, Math.floor((sampleRate * durationMs) / 1000));
+  const dataSize = sampleCount * channels * (bitsPerSample / 8);
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeAscii = (offset, value) => {
+    for (let i = 0; i < value.length; i += 1) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  };
+
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channels * (bitsPerSample / 8), true);
+  view.setUint16(32, channels * (bitsPerSample / 8), true);
+  view.setUint16(34, bitsPerSample, true);
+  writeAscii(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+// Mask large b64_json strings to keep JSON view readable
+function maskB64(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(maskB64);
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = (k === "b64_json" && typeof v === "string" && v.length > 100)
+      ? `<${v.length} chars base64>`
+      : maskB64(v);
+  }
+  return out;
+}
 
 // Map combo.kind → listing route to go back to
 function getListingHref(kind) {
   if (kind === "webSearch" || kind === "webFetch") return "/dashboard/media-providers/web";
+  if (kind === "stt") return "/dashboard/combos";
   return `/dashboard/media-providers/${kind}`;
 }
 
@@ -169,7 +219,7 @@ export default function ComboDetailPage() {
     if (res.ok) router.push(getListingHref(combo.kind));
   };
 
-  const handleTest = async () => {
+  const handleTest = useCallback(async () => {
     setTesting(true);
     setTestResult(null);
     setTestError("");
@@ -178,10 +228,19 @@ export default function ComboDetailPage() {
     const start = Date.now();
     try {
       const path = EXAMPLE_PATHS[combo.kind];
-      const body = EXAMPLE_BODIES[combo.kind](combo.name);
-      const headers = { "Content-Type": "application/json" };
+      const headers = {};
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-      const res = await fetch(`/api${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+      let res;
+      if (combo.kind === "stt") {
+        const fd = new FormData();
+        fd.append("model", combo.name);
+        fd.append("file", createSilentWavBlob(), "test.wav");
+        res = await fetch(`/api${path}`, { method: "POST", headers, body: fd });
+      } else {
+        headers["Content-Type"] = "application/json";
+        const body = EXAMPLE_BODIES[combo.kind](combo.name);
+        res = await fetch(`/api${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+      }
       const latencyMs = Date.now() - start;
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -213,20 +272,7 @@ export default function ComboDetailPage() {
       setTestError(e.message || "Network error");
     }
     setTesting(false);
-  };
-
-  // Mask large b64_json strings to keep JSON view readable
-  function maskB64(obj) {
-    if (!obj || typeof obj !== "object") return obj;
-    if (Array.isArray(obj)) return obj.map(maskB64);
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = (k === "b64_json" && typeof v === "string" && v.length > 100)
-        ? `<${v.length} chars base64>`
-        : maskB64(v);
-    }
-    return out;
-  }
+  }, [combo, apiKey, testResult]);
 
   if (loading) return <div className="text-text-muted text-sm">Loading...</div>;
   if (!combo) return notFound();
@@ -234,9 +280,11 @@ export default function ComboDetailPage() {
   const kindLabel = KIND_LABELS[combo.kind] || MEDIA_PROVIDER_KINDS.find((k) => k.id === combo.kind)?.label || "Combo";
   const examplePath = EXAMPLE_PATHS[combo.kind];
   const exampleBody = combo.kind && EXAMPLE_BODIES[combo.kind] ? EXAMPLE_BODIES[combo.kind](combo.name) : null;
-  const curlExample = examplePath
-    ? `curl -X POST http://localhost:20128${examplePath} \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}" \\\n  -d '${JSON.stringify(exampleBody)}'`
-    : "";
+  const curlExample = combo.kind === "stt"
+    ? `curl -X POST http://localhost:20128${examplePath} \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}" \\\n  -F "file=@audio.mp3" \\\n  -F "model=${combo.name}"`
+    : (examplePath
+      ? `curl -X POST http://localhost:20128${examplePath} \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}" \\\n  -d '${JSON.stringify(exampleBody)}'`
+      : "");
   const backHref = getListingHref(combo.kind);
 
   return (

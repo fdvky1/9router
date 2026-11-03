@@ -52,12 +52,21 @@ export default {
     { id: "@cf/runwayml/stable-diffusion-v1-5-img2img", name: "Stable Diffusion v1.5 Img2Img", params: ["size"], capabilities: ["edit"], kind: "image" },
     { id: "@cf/runwayml/stable-diffusion-v1-5-inpainting", name: "Stable Diffusion v1.5 Inpainting", params: ["size"], capabilities: ["edit","mask"], kind: "image" },
     { id: "@cf/stabilityai/stable-diffusion-xl-base-1.0", name: "SDXL Base 1.0", params: ["size"], kind: "image" },
+    { id: "@cf/openai/whisper", name: "Whisper", params: ["response_format"], responseFormats: ["json", "text", "vtt"], kind: "stt" },
+    { id: "@cf/openai/whisper-large-v3-turbo", name: "Whisper Large v3 Turbo", params: ["language", "prompt", "response_format"], responseFormats: ["json", "text", "vtt", "verbose_json"], kind: "stt" },
+    { id: "@cf/openai/whisper-tiny-en", name: "Whisper Tiny EN", params: ["response_format"], responseFormats: ["json", "text", "vtt"], kind: "stt" },
   ],
-  serviceKinds: ["llm","image","systemone"],
+  serviceKinds: ["llm", "image", "systemone", "stt"],
   systemoneConfig: {
     baseUrl: "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}",
     authType: "apikey",
     authHeader: "bearer",
   },
   imageConfig: { baseUrl: "https://api.cloudflare.com/client/v4/accounts" },
+  sttConfig: {
+    baseUrl: "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "cloudflare-stt",
+  },
 };
