@@ -125,7 +125,7 @@ describe("Nous API-key attribution", () => {
     expect(response.status).toBe(200);
     expect(proxyAwareFetch).toHaveBeenCalledWith(`${baseUrl}/chat/completions`, expect.objectContaining({
       headers: expect.objectContaining({ Authorization: `Bearer ${credentials.apiKey}` }),
-    }), proxyOptions);
+    }), proxyOptions, null);
     expect(JSON.parse(proxyAwareFetch.mock.calls[0][1].body).tags).toEqual(expectedTags);
   });
 });
