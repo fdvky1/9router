@@ -252,10 +252,14 @@ export default function ModelSelectModal({
     // Get all active provider IDs from connections (filtered by kindFilter if set)
     const activeConnectionIds = filteredActiveProviders.map(p => p.provider);
 
-    // No-auth providers: filter by kindFilter as well
+    // No-auth providers: filter by kindFilter as well. A key allow list may name
+    // hidden keyless media providers (coqui, tortoise), so allKinds keeps them.
+    const noAuthPool = allKinds
+      ? Object.keys(AI_PROVIDERS).filter((id) => AI_PROVIDERS[id].noAuth)
+      : NO_AUTH_PROVIDER_IDS;
     const noAuthIds = (kindFilter && !allKinds
-      ? NO_AUTH_PROVIDER_IDS.filter((id) => (AI_PROVIDERS[id]?.serviceKinds || ["llm"]).includes(kindFilter))
-      : NO_AUTH_PROVIDER_IDS).filter((id) => !deactivatedProviderIds.has(id));
+      ? noAuthPool.filter((id) => (AI_PROVIDERS[id]?.serviceKinds || ["llm"]).includes(kindFilter))
+      : noAuthPool).filter((id) => !deactivatedProviderIds.has(id));
 
     // Compatible nodes (OpenAI/Anthropic Compatible) that already have user-added
     // custom models should be selectable even without an API-key connection. Local /

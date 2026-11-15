@@ -3,6 +3,13 @@
 // otherwise replace the real module under test in sibling suites.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// The fork's executor warms the gate harness before running; keep it off the
+// network so an offline runner cannot stall the test on the fetch timeout.
+vi.mock("../../open-sse/utils/opencodeAgentHarness.js", () => ({
+  loadAgentHarness: vi.fn(async () => null),
+  applyAgentHarness: vi.fn(),
+}));
+
 describe("opencode executor forwards the resolved proxy", () => {
   it("passes the proxy URL through to opencodeTlsFetch", async () => {
     const { tlsFetchMock } = vi.hoisted(() => ({ tlsFetchMock: vi.fn() }));
