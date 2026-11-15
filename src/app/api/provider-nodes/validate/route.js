@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 import { isLocalRequest } from "@/dashboardGuard";
+import { sanitizeCustomHeaders } from "@/shared/utils/customHeaders";
 
 // Fetch with timeout wrapper
 const fetchWithTimeout = (url, options, timeout = 10000) => {
@@ -55,7 +56,7 @@ const getChatErrorMessage = (status) => {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { baseUrl, apiKey, type, modelId } = body;
+    const { baseUrl, apiKey, type, modelId, headers: rawHeaders } = body;
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json({ error: "Base URL and API key required" }, { status: 400 });
@@ -65,6 +66,12 @@ export async function POST(request) {
     if (!isValidUrl(baseUrl)) {
       return NextResponse.json({ error: "Invalid URL format" }, { status: 400 });
     }
+
+    const { headers: extraHeaders, error: headersError } = sanitizeCustomHeaders(rawHeaders);
+    if (headersError) {
+      return NextResponse.json({ error: headersError }, { status: 400 });
+    }
+    const customHeaders = extraHeaders || {};
 
     // SSRF guard for remote callers; local host keeps self-hosted nodes (e.g. ollama-local)
     if (!isLocalRequest(request)) {
@@ -85,7 +92,8 @@ export async function POST(request) {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          ...customHeaders,
         },
         body: JSON.stringify({ model: modelId.trim(), input: "ping" })
       });
@@ -118,7 +126,8 @@ export async function POST(request) {
         headers: {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
-          "Authorization": `Bearer ${apiKey}`
+          "Authorization": `Bearer ${apiKey}`,
+          ...customHeaders,
         }
       });
 
@@ -137,7 +146,8 @@ export async function POST(request) {
             "Authorization": `Bearer ${apiKey}`,
             "Content-Type": "application/json",
             "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
+            ...customHeaders,
           },
           body: JSON.stringify({
             model: modelId,
@@ -161,7 +171,10 @@ export async function POST(request) {
     // OpenAI Compatible Validation (Default)
     const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
     const res = await fetchWithTimeout(modelsUrl, {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        ...customHeaders,
+      },
     });
 
     if (res.ok) return NextResponse.json({ valid: true });
@@ -177,7 +190,8 @@ export async function POST(request) {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          ...customHeaders,
         },
         body: JSON.stringify({
           model: modelId,

@@ -3,6 +3,11 @@
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
 import { Badge, Button, Input, Modal, Select } from "@/shared/components";
+import CustomHeadersEditor from "./CustomHeadersEditor";
+import {
+  CUSTOM_HEADER_NAME_RE,
+  BLOCKED_CUSTOM_HEADERS,
+} from "@/shared/utils/customHeaders";
 
 const VARIANT_CONFIG = {
   openai: {
@@ -49,6 +54,21 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
   const [checkModelId, setCheckModelId] = useState("");
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
+  const [headerRows, setHeaderRows] = useState([{ name: "", value: "" }]);
+  const [headersExpanded, setHeadersExpanded] = useState(false);
+
+  // Helper to extract clean headers object from rows
+  const getCleanHeaders = () => {
+    const headers = {};
+    for (const r of headerRows) {
+      const name = r.name?.trim();
+      const value = r.value?.trim();
+      if (!name) continue;
+      if (!CUSTOM_HEADER_NAME_RE.test(name) || BLOCKED_CUSTOM_HEADERS.has(name.toLowerCase())) continue;
+      headers[name] = value ?? "";
+    }
+    return Object.keys(headers).length > 0 ? headers : null;
+  };
 
   // openai: reset baseUrl when apiType changes; anthropic: reset checks when opened
   useEffect(() => {
@@ -58,6 +78,8 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
       setValidationResult(null);
       setCheckKey("");
       setCheckModelId("");
+      setHeaderRows([{ name: "", value: "" }]);
+      setHeadersExpanded(false);
     }
   }, [config.hasApiType ? formData.apiType : isOpen]);
 
@@ -65,6 +87,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
     if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
     setSubmitting(true);
     try {
+      const headers = getCleanHeaders();
       const res = await fetch("/api/provider-nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -74,6 +97,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
           ...(config.hasApiType ? { apiType: formData.apiType } : {}),
           baseUrl: formData.baseUrl,
           type: config.type,
+          headers,
         }),
       });
       const data = await res.json();
@@ -82,6 +106,8 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
         setFormData(initialFormData());
         setCheckKey("");
         setValidationResult(null);
+        setHeaderRows([{ name: "", value: "" }]);
+        setHeadersExpanded(false);
       }
     } catch (error) {
       console.log(`Error creating ${config.errorLabel} node:`, error);
@@ -93,6 +119,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
   const handleValidate = async () => {
     setValidating(true);
     try {
+      const headers = getCleanHeaders();
       const res = await fetch("/api/provider-nodes/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -101,6 +128,7 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
           apiKey: checkKey,
           type: config.type,
           modelId: checkModelId.trim() || undefined,
+          headers,
         }),
       });
       const data = await res.json();
@@ -164,6 +192,12 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
           onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
           placeholder={config.defaultBaseUrl}
           hint={config.baseUrlHint}
+        />
+        <CustomHeadersEditor
+          rows={headerRows}
+          setRows={setHeaderRows}
+          expanded={headersExpanded}
+          setExpanded={setHeadersExpanded}
         />
         <Input
           label="API Key (for Check)"

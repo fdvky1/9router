@@ -72,6 +72,12 @@ export class BaseExecutor {
       headers["Accept"] = "text/event-stream";
     }
 
+    // Node-level custom headers from providerSpecificData (for custom/compatible nodes)
+    const nodeHeaders = credentials?.providerSpecificData?.headers;
+    if (nodeHeaders && typeof nodeHeaders === "object") {
+      Object.assign(headers, nodeHeaders);
+    }
+
     return headers;
   }
 

@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
+import { sanitizeCustomHeaders } from "@/shared/utils/customHeaders";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, prefix, apiType, baseUrl } = body;
+    const { name, prefix, apiType, baseUrl, headers: rawHeaders } = body;
     const node = await getProviderNodeById(id);
 
     if (!node) {
@@ -19,6 +20,15 @@ export async function PUT(request, { params }) {
 
     if (!prefix?.trim()) {
       return NextResponse.json({ error: "Prefix is required" }, { status: 400 });
+    }
+
+    let sanitizedHeaders = undefined;
+    if (rawHeaders !== undefined) {
+      const { headers, error: headersError } = sanitizeCustomHeaders(rawHeaders);
+      if (headersError) {
+        return NextResponse.json({ error: headersError }, { status: 400 });
+      }
+      sanitizedHeaders = headers;
     }
 
     // Only validate apiType for OpenAI Compatible nodes
@@ -54,6 +64,10 @@ export async function PUT(request, { params }) {
       baseUrl: sanitizedBaseUrl,
     };
 
+    if (rawHeaders !== undefined) {
+      updates.headers = sanitizedHeaders;
+    }
+
     if (node.type === "openai-compatible") {
       updates.apiType = apiType;
     }
@@ -69,6 +83,7 @@ export async function PUT(request, { params }) {
           apiType: node.type === "openai-compatible" ? apiType : undefined,
           baseUrl: sanitizedBaseUrl,
           nodeName: updated.name,
+          ...(rawHeaders !== undefined ? { headers: sanitizedHeaders } : {}),
         }
       })
     )));

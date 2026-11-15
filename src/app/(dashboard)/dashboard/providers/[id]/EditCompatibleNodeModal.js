@@ -3,6 +3,11 @@
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
+import CustomHeadersEditor from "../components/CustomHeadersEditor";
+import {
+  CUSTOM_HEADER_NAME_RE,
+  BLOCKED_CUSTOM_HEADERS,
+} from "@/shared/utils/customHeaders";
 
 export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose, isAnthropic }) {
   const [formData, setFormData] = useState({
@@ -16,6 +21,8 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
   const [checkModelId, setCheckModelId] = useState("");
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
+  const [headerRows, setHeaderRows] = useState([{ name: "", value: "" }]);
+  const [headersExpanded, setHeadersExpanded] = useState(false);
 
   useEffect(() => {
     if (node) {
@@ -25,6 +32,9 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
         apiType: node.apiType || "chat",
         baseUrl: node.baseUrl || (isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"),
       });
+      const rows = Object.entries(node.headers || {}).map(([name, value]) => ({ name, value }));
+      setHeaderRows(rows.length ? rows : [{ name: "", value: "" }]);
+      setHeadersExpanded(rows.length > 0);
     }
   }, [node, isAnthropic]);
 
@@ -32,6 +42,18 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
     { value: "chat", label: "Chat Completions" },
     { value: "responses", label: "Responses API" },
   ];
+
+  const getCleanHeaders = () => {
+    const headers = {};
+    for (const r of headerRows) {
+      const name = r.name?.trim();
+      const value = r.value?.trim();
+      if (!name) continue;
+      if (!CUSTOM_HEADER_NAME_RE.test(name) || BLOCKED_CUSTOM_HEADERS.has(name.toLowerCase())) continue;
+      headers[name] = value ?? "";
+    }
+    return Object.keys(headers).length > 0 ? headers : null;
+  };
 
   const handleSubmit = async () => {
     if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
@@ -41,6 +63,7 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
         name: formData.name,
         prefix: formData.prefix,
         baseUrl: formData.baseUrl,
+        headers: getCleanHeaders(),
       };
       if (!isAnthropic) {
         payload.apiType = formData.apiType;
@@ -61,7 +84,8 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
           baseUrl: formData.baseUrl,
           apiKey: checkKey,
           type: isAnthropic ? "anthropic-compatible" : "openai-compatible",
-          modelId: checkModelId.trim() || undefined
+          modelId: checkModelId.trim() || undefined,
+          headers: getCleanHeaders(),
         }),
       });
       const data = await res.json();
@@ -106,6 +130,12 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
           onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
           placeholder={isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"}
           hint={`Use the base URL (ending in /v1) for your ${isAnthropic ? "Anthropic" : "OpenAI"}-compatible API.`}
+        />
+        <CustomHeadersEditor
+          rows={headerRows}
+          setRows={setHeaderRows}
+          expanded={headersExpanded}
+          setExpanded={setHeadersExpanded}
         />
         <div className="flex gap-2">
           <Input
@@ -154,6 +184,7 @@ EditCompatibleNodeModal.propTypes = {
     prefix: PropTypes.string,
     apiType: PropTypes.string,
     baseUrl: PropTypes.string,
+    headers: PropTypes.object,
   }),
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,

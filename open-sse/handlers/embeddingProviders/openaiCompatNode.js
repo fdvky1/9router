@@ -10,4 +10,12 @@ export default {
     const baseUrl = rawBaseUrl.replace(/\/$/, "").replace(/\/embeddings$/, "");
     return `${baseUrl}/embeddings`;
   },
+  buildHeaders: (creds, ctx) => {
+    const headers = baseAdapter.buildHeaders(creds, ctx);
+    const nodeHeaders = creds?.providerSpecificData?.headers;
+    if (nodeHeaders && typeof nodeHeaders === "object") {
+      Object.assign(headers, nodeHeaders);
+    }
+    return headers;
+  },
 };
