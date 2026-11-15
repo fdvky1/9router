@@ -277,6 +277,13 @@ export class DefaultExecutor extends BaseExecutor {
     }
 
     if (stream) headers["Accept"] = "text/event-stream";
+
+    // Node-level custom headers from providerSpecificData (for openai/anthropic compatible nodes)
+    const nodeHeaders = credentials?.providerSpecificData?.headers;
+    if (nodeHeaders && typeof nodeHeaders === "object") {
+      Object.assign(headers, nodeHeaders);
+    }
+
     return headers;
   }
 

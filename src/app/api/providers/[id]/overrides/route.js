@@ -1,61 +1,25 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb";
+import { getSettings, updateSettings, getProviderNodeById } from "@/lib/localDb";
 import { PROVIDERS } from "open-sse/config/providers.js";
 import { resolveProviderAlias } from "open-sse/services/model.js";
+import {
+  MAX_CUSTOM_HEADERS as MAX_HEADERS,
+  MAX_CUSTOM_HEADER_VALUE_LENGTH as MAX_HEADER_VALUE_LENGTH,
+  CUSTOM_HEADER_NAME_RE as HEADER_NAME_RE,
+  BLOCKED_CUSTOM_HEADERS as BLOCKED_HEADERS,
+  sanitizeCustomHeaders,
+} from "@/shared/utils/customHeaders";
 
 export const dynamic = "force-dynamic";
-
-// Validation at the trust boundary — the UI also validates, but this is the gate.
-const MAX_HEADERS = 20;
-const MAX_HEADER_VALUE_LENGTH = 8192;
-// RFC 7230 token subset: letters, digits, hyphen (no spaces, no unicode)
-const HEADER_NAME_RE = /^[A-Za-z0-9-]+$/;
-// Request-structure / auth headers a user override must never touch
-const BLOCKED_HEADERS = new Set([
-  "host",
-  "content-length",
-  "content-type",
-  "connection",
-  "transfer-encoding",
-  "authorization",
-  "cookie",
-]);
 
 /**
  * Validate + normalize an override payload. Returns { override } or { error }.
  * An override with no headers is normalized to null (= delete).
  */
 function normalizeOverride({ headers }) {
-  const out = {};
-
-  if (headers !== undefined && headers !== null) {
-    if (typeof headers !== "object" || Array.isArray(headers)) {
-      return { error: "headers must be an object" };
-    }
-    const entries = Object.entries(headers).filter(([, v]) => v !== "" && v != null);
-    if (entries.length > MAX_HEADERS) {
-      return { error: `Too many headers (max ${MAX_HEADERS})` };
-    }
-    const clean = {};
-    for (const [name, value] of entries) {
-      if (!HEADER_NAME_RE.test(name)) {
-        return { error: `Invalid header name: ${name}` };
-      }
-      if (typeof value !== "string" || /[\r\n]/.test(value)) {
-        return { error: `Invalid value for header ${name}` };
-      }
-      if (value.length > MAX_HEADER_VALUE_LENGTH) {
-        return { error: `Header ${name} value too long (max ${MAX_HEADER_VALUE_LENGTH})` };
-      }
-      if (BLOCKED_HEADERS.has(name.toLowerCase())) {
-        return { error: `Header ${name} cannot be overridden` };
-      }
-      clean[name] = value;
-    }
-    if (Object.keys(clean).length) out.headers = clean;
-  }
-
-  return { override: Object.keys(out).length ? out : null };
+  const res = sanitizeCustomHeaders(headers);
+  if (res.error) return { error: res.error };
+  return { override: res.headers ? { headers: res.headers } : null };
 }
 
 async function readOverrides() {
@@ -72,11 +36,20 @@ export async function GET(request, { params }) {
     // URL may use an alias (gcli, cc…) — key everything by canonical registry id
     const canonical = resolveProviderAlias(id);
     const override = (await readOverrides())[canonical] || {};
-    // Built-in headers come straight from the registry transport — single source of
-    // truth, so the UI pre-fills exactly what this provider sends upstream.
+
+    let builtinHeaders = PROVIDERS[canonical]?.headers || {};
+    // For custom compatible nodes, fallback to node-level headers if available
+    if (Object.keys(builtinHeaders).length === 0) {
+      const node = await getProviderNodeById(canonical);
+      if (node?.headers) {
+        builtinHeaders = node.headers;
+      }
+    }
+
+    // Built-in headers come straight from the registry transport (or node definition)
     return NextResponse.json({
       headers: override.headers || {},
-      builtinHeaders: PROVIDERS[canonical]?.headers || {},
+      builtinHeaders,
     });
   } catch (error) {
     console.log("Error getting provider overrides:", error);

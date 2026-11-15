@@ -4,12 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import { Card, Badge } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import {
+  CUSTOM_HEADER_NAME_RE,
+  BLOCKED_CUSTOM_HEADERS,
+} from "@/shared/utils/customHeaders";
 
-// Mirrors the server-side gate in /api/providers/[id]/overrides — client check is UX only
-const BLOCKED_HEADERS = ["host", "content-length", "content-type", "connection", "transfer-encoding", "authorization", "cookie"];
-const HEADER_NAME_RE = /^[A-Za-z0-9-]+$/;
-
-export default function CustomConfigCard({ providerId }) {
+export default function CustomConfigCard({ providerId, isCompatible = false }) {
   const notify = useNotificationStore();
   const [expanded, setExpanded] = useState(false);
   const [rows, setRows] = useState([{ name: "", value: "" }]);
@@ -45,11 +45,11 @@ export default function CustomConfigCard({ providerId }) {
     const headers = {};
     for (const r of rows.filter((r) => r.name.trim())) {
       const name = r.name.trim();
-      if (!HEADER_NAME_RE.test(name)) {
+      if (!CUSTOM_HEADER_NAME_RE.test(name)) {
         notify.error(`Invalid header name: ${name}`);
         return;
       }
-      if (BLOCKED_HEADERS.includes(name.toLowerCase())) {
+      if (BLOCKED_CUSTOM_HEADERS.has(name.toLowerCase())) {
         notify.error(`Header ${name} cannot be overridden`);
         return;
       }
@@ -83,8 +83,8 @@ export default function CustomConfigCard({ providerId }) {
     setRows(Object.entries(builtin).map(([name, value]) => ({ name, value })));
   };
 
-  // Only render when there is something to customize: registry headers or existing overrides
-  if (Object.keys(builtin).length === 0 && !hasOverride) return null;
+  // Render when there are registry headers, existing overrides, or for custom compatible nodes
+  if (Object.keys(builtin).length === 0 && !hasOverride && !isCompatible) return null;
 
   return (
     <Card padding="xs">
@@ -178,4 +178,5 @@ export default function CustomConfigCard({ providerId }) {
 
 CustomConfigCard.propTypes = {
   providerId: PropTypes.string.isRequired,
+  isCompatible: PropTypes.bool,
 };
